@@ -25,3 +25,6 @@ resources:
 - ../crd
 - ../rbac
 - ../manager
+
+patchesStrategicMerge:
+- manager_patch.yaml
