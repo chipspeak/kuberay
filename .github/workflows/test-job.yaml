@@ -376,6 +376,8 @@ jobs:
           # Wait for CRDs to be ready
           kubectl wait --for=condition=established --timeout=300s crd/rayclusters.ray.io
           kubectl wait --for=condition=established --timeout=300s crd/rayjobs.ray.io
+          # Wait for operator to be ready to handle resources
+          kubectl rollout status deployment/kuberay-operator --timeout=300s
 
       - name: Checkout Python
         uses: actions/checkout@v2
