@@ -108,6 +108,7 @@ clients/
 ```
 
 ## For developers
+
 make sure you have installed setuptool
 
 `pip install -U pip setuptools`
