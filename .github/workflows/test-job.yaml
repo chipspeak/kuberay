@@ -373,6 +373,9 @@ jobs:
         run: |
           helm install kuberay-operator kuberay/kuberay-operator --version 1.1.0
           kubectl wait --for=condition=Available deployment/kuberay-operator --timeout=300s
+          # Wait for CRDs to be ready
+          kubectl wait --for=condition=established --timeout=300s crd/rayclusters.ray.io
+          kubectl wait --for=condition=established --timeout=300s crd/rayjobs.ray.io
 
       - name: Checkout Python
         uses: actions/checkout@v2
