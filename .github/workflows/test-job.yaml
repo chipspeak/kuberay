@@ -5,10 +5,12 @@ on:
     branches:
     - master
     - release-*
+    - rayjob-api
   pull_request:
     branches:
     - master
     - release-*
+    - rayjob-api
 
 jobs:
   lint:
