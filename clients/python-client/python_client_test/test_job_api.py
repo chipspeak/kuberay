@@ -13,17 +13,17 @@ class TestJobApi(unittest.TestCase):
         self.cluster_api = kuberay_cluster_api.RayClusterApi()
         self.director = kuberay_cluster_builder.Director()
 
-    def test_wait_until_ray_job_completed(self):
-        """Test wait_until_ray_job_completed method."""
+    def test_wait_until_job_finished(self):
+        """Test wait_until_job_finished method."""
         # Test case 1: job not found
         job_name = "nonexistent-job"
         namespace = "default"
         timeout = 10
         interval = 1
-        with self.assertRaises(TimeoutError):
-            self.job_api.wait_until_ray_job_completed(
-                job_name, namespace, timeout, interval
-            )
+        result = self.job_api.wait_until_job_finished(
+            job_name, namespace, timeout, interval
+        )
+        self.assertFalse(result, "Should return False for non-existent job")
 
     def test_submit_ray_job_to_existing_cluster(self):
         """Test submit_ray_job_to_existing_cluster method."""
@@ -63,11 +63,11 @@ class TestJobApi(unittest.TestCase):
                 },
             },
         }
-        created_job = self.job_api.create_ray_job(body=job_body, k8s_namespace=namespace)
-        self.job_api.wait_until_ray_job_completed(job_name, namespace, 120, 10)
+        created_job = self.job_api.submit_job(job=job_body, k8s_namespace=namespace)
+        self.job_api.wait_until_job_finished(job_name, namespace, 120, 10)
 
         # Delete the RayJob
-        self.job_api.delete_ray_job(job_name, namespace)
+        self.job_api.delete_job(job_name, namespace)
 
         # Delete the RayCluster
         self.cluster_api.delete_ray_cluster(cluster_name, namespace)
@@ -104,15 +104,18 @@ class TestJobApi(unittest.TestCase):
                 },
             },
         }
-        created_job = self.job_api.submit_ray_job_to_new_cluster(
-            job_body=job_body,
-            cluster_body=cluster_body,
-            k8s_namespace=namespace,
+        # First create the cluster
+        created_cluster = self.cluster_api.create_ray_cluster(
+            body=cluster_body, k8s_namespace=namespace
         )
-        self.job_api.wait_until_ray_job_completed(job_name, namespace, 120, 10)
+        self.cluster_api.wait_until_ray_cluster_running(cluster_name, namespace, 120, 10)
+        
+        # Then submit the job
+        created_job = self.job_api.submit_job(job=job_body, k8s_namespace=namespace)
+        self.job_api.wait_until_job_finished(job_name, namespace, 120, 10)
 
         # Delete the RayJob
-        self.job_api.delete_ray_job(job_name, namespace)
+        self.job_api.delete_job(job_name, namespace)
 
         # Delete the RayCluster
         self.cluster_api.delete_ray_cluster(cluster_name, namespace)
