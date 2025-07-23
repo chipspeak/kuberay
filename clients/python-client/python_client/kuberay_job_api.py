@@ -170,6 +170,15 @@ class RayjobApi:
         return False
 
     def delete_job(self, name: str, k8s_namespace: str = "default") -> bool:
+        """Delete a Ray job in a given namespace.
+
+        Parameters:
+        - name (str): The name of the Ray job custom resource.
+        - k8s_namespace (str, optional): The namespace in which to delete the Ray job. Defaults to "default".
+
+        Returns:
+            bool: True if the job was deleted successfully, False otherwise.
+        """
         try:
             resource: Any = self.api.delete_namespaced_custom_object(
                 group=constants.GROUP,
@@ -178,7 +187,7 @@ class RayjobApi:
                 name=name,
                 namespace=k8s_namespace,
             )
-            return resource
+            return True
         except ApiException as e:
             if e.status == 404:
                 log.error(
