@@ -7,7 +7,7 @@ import time
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from typing import Any, Optional
-from odh_kuberay_client import constants
+from python_client import constants
 
 
 log = logging.getLogger(__name__)

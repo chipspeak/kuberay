@@ -1,5 +1,5 @@
 import unittest
-from odh_kuberay_client import kuberay_cluster_api
+from python_client import kuberay_cluster_api
 
 
 test_cluster_body: dict = {

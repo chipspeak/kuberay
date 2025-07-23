@@ -1,8 +1,8 @@
 import unittest
-from odh_kuberay_client import kuberay_job_api
-from odh_kuberay_client import kuberay_cluster_api
-from odh_kuberay_client.utils import kuberay_cluster_builder
-from odh_kuberay_client import constants
+from python_client import kuberay_job_api
+from python_client import kuberay_cluster_api
+from python_client.utils import kuberay_cluster_builder
+from python_client import constants
 
 
 class TestUtils(unittest.TestCase):

@@ -1,26 +1,26 @@
 [tool.poetry]
-name = "odh-kuberay-client"
-version = "0.0.0-dev"
-description = "Python SDK for Kuberay client"
+name = "kuberay-client"
+version = "0.1.0"
+description = "Python SDK for KubeRay"
 license = "Apache-2.0"
 authors = [
-    "Bryan Keane <bkeane@redhat.com>"
+    "KubeRay Contributors"
 ]
 readme = "README.md"
-repository = "https://github.com/opendatahub-io/kuberay"
-homepage = "https://github.com/opendatahub-io/kuberay"
-keywords = ["kuberay", "python", "client"]
+repository = "https://github.com/ray-project/kuberay"
+homepage = "https://github.com/ray-project/kuberay"
+keywords = ["kuberay", "ray", "kubernetes", "python", "client"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent"
 ]
 packages = [
-  { include = "odh_kuberay_client" }
+  { include = "python_client" }
 ]
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = "^3.8"
 kubernetes = ">=25.0.0"
 
 [build-system]
