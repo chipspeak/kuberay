@@ -216,14 +216,13 @@ class Director:
             return cluster
         return None
 
-    def build_small_cluster(self, name: str, k8s_namespace: str = "default", labels: dict = None, configmap_name: str = None) -> dict:
+    def build_small_cluster(self, name: str, k8s_namespace: str = "default", labels: dict = None) -> dict:
         """Builds a small cluster with the given name and k8s_namespace parameters with 1 workergroup,
         the workgroup has 1 replica with 2 cpu and 2G memory limits
 
         Parameters:
         - name (str): The name of the cluster.
         - k8s_namespace (str, optional): The kubernetes namespace for the cluster, with a default value of "default".
-        - configmap_name (str, optional): The name of a ConfigMap to mount at /home/ray/code
 
         Returns:
         dict: The small cluster as a dictionary.
@@ -243,26 +242,6 @@ class Director:
             )
             .get_cluster()
         )
-
-        if self.cluster_builder.succeeded and configmap_name:
-            # Add volume mount for job.py if configmap is provided
-            volume = {
-                "name": "job-code",
-                "configMap": {"name": configmap_name}
-            }
-            volume_mount = {
-                "name": "job-code",
-                "mountPath": "/home/ray/code"
-            }
-            
-            # Add to head node
-            cluster["spec"]["headGroupSpec"]["template"]["spec"].setdefault("volumes", []).append(volume)
-            cluster["spec"]["headGroupSpec"]["template"]["spec"]["containers"][0].setdefault("volumeMounts", []).append(volume_mount)
-            
-            # Add to worker nodes
-            for worker_group in cluster["spec"]["workerGroupSpecs"]:
-                worker_group["template"]["spec"].setdefault("volumes", []).append(volume)
-                worker_group["template"]["spec"]["containers"][0].setdefault("volumeMounts", []).append(volume_mount)
 
         if self.cluster_builder.succeeded:
             return cluster

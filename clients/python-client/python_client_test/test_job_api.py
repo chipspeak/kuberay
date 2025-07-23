@@ -1,13 +1,10 @@
 import unittest
 import uuid
-import time
-import os
 
 from python_client import kuberay_job_api
 from python_client import kuberay_cluster_api
 from python_client import constants
 from python_client.utils import kuberay_cluster_builder
-from kubernetes import client, config
 
 
 class TestJobApi(unittest.TestCase):
@@ -15,39 +12,6 @@ class TestJobApi(unittest.TestCase):
         self.job_api = kuberay_job_api.RayjobApi()
         self.cluster_api = kuberay_cluster_api.RayClusterApi()
         self.director = kuberay_cluster_builder.Director()
-        
-        # Create ConfigMap for job.py
-        config.load_kube_config()
-        self.v1 = client.CoreV1Api()
-        
-        # Read job.py content
-        job_path = os.path.join(os.path.dirname(__file__), 'job.py')
-        with open(job_path, 'r') as f:
-            job_content = f.read()
-            
-        # Create ConfigMap
-        self.configmap_name = 'ray-test-job'
-        try:
-            self.v1.create_namespaced_config_map(
-                namespace='default',
-                body=client.V1ConfigMap(
-                    metadata=client.V1ObjectMeta(name=self.configmap_name),
-                    data={'job.py': job_content}
-                )
-            )
-        except client.exceptions.ApiException as e:
-            if e.status != 409:  # Ignore if already exists
-                raise
-
-    def tearDown(self) -> None:
-        try:
-            self.v1.delete_namespaced_config_map(
-                name=self.configmap_name,
-                namespace='default'
-            )
-        except client.exceptions.ApiException as e:
-            if e.status != 404:  # Ignore if already deleted
-                raise
 
     def test_wait_until_ray_job_completed(self):
         """Test wait_until_ray_job_completed method."""
@@ -69,8 +33,7 @@ class TestJobApi(unittest.TestCase):
         cluster_body = self.director.build_small_cluster(
             name=cluster_name,
             k8s_namespace=namespace,
-            labels={"ray.io/cluster": cluster_name},
-            configmap_name=self.configmap_name
+            labels={"ray.io/cluster": cluster_name}
         )
         created_cluster = self.cluster_api.create_ray_cluster(
             body=cluster_body, k8s_namespace=namespace
@@ -91,7 +54,7 @@ class TestJobApi(unittest.TestCase):
                 },
             },
             "spec": {
-                "entrypoint": "python /home/ray/code/job.py",
+                "entrypoint": "python -c \"import ray; ray.init(); print('Ray job completed successfully')\"",
                 "rayCluster": cluster_name,
                 "runtime": {
                     "env": [
@@ -118,8 +81,7 @@ class TestJobApi(unittest.TestCase):
         cluster_body = self.director.build_small_cluster(
             name=cluster_name,
             k8s_namespace=namespace,
-            labels={"ray.io/cluster": cluster_name},
-            configmap_name=self.configmap_name
+            labels={"ray.io/cluster": cluster_name}
         )
         job_body = {
             "apiVersion": constants.GROUP + "/" + constants.JOB_VERSION,
@@ -133,7 +95,7 @@ class TestJobApi(unittest.TestCase):
                 },
             },
             "spec": {
-                "entrypoint": "python /home/ray/code/job.py",
+                "entrypoint": "python -c \"import ray; ray.init(); print('Ray job completed successfully')\"",
                 "rayCluster": cluster_name,
                 "runtime": {
                     "env": [
