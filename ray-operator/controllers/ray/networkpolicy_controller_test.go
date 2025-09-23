@@ -94,27 +94,37 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 				time.Second*3, time.Millisecond*500).Should(Succeed(), "Should be able to see RayCluster: %v", rayCluster.Name)
 		})
 
-		It("Check NetworkPolicy is created", func() {
-			networkPolicy := &networkingv1.NetworkPolicy{}
-			expectedName := rayCluster.Name + "-default-deny"
-			namespacedName := types.NamespacedName{Namespace: namespace, Name: expectedName}
+		It("Check Head NetworkPolicy is created", func() {
+			headNetworkPolicy := &networkingv1.NetworkPolicy{}
+			expectedHeadName := rayCluster.Name + "-head"
+			headNamespacedName := types.NamespacedName{Namespace: namespace, Name: expectedHeadName}
 
 			Eventually(
-				getResourceFunc(ctx, namespacedName, networkPolicy),
-				time.Second*10, time.Millisecond*500).Should(Succeed(), "NetworkPolicy should be created: %v", expectedName)
+				getResourceFunc(ctx, headNamespacedName, headNetworkPolicy),
+				time.Second*10, time.Millisecond*500).Should(Succeed(), "Head NetworkPolicy should be created: %v", expectedHeadName)
 		})
 
-		It("Verify NetworkPolicy has correct structure", func() {
-			networkPolicy := &networkingv1.NetworkPolicy{}
-			expectedName := rayCluster.Name + "-default-deny"
-			namespacedName := types.NamespacedName{Namespace: namespace, Name: expectedName}
+		It("Check Worker NetworkPolicy is created", func() {
+			workerNetworkPolicy := &networkingv1.NetworkPolicy{}
+			expectedWorkerName := rayCluster.Name + "-workers"
+			workerNamespacedName := types.NamespacedName{Namespace: namespace, Name: expectedWorkerName}
 
-			err := k8sClient.Get(ctx, namespacedName, networkPolicy)
-			Expect(err).NotTo(HaveOccurred(), "Failed to get NetworkPolicy")
+			Eventually(
+				getResourceFunc(ctx, workerNamespacedName, workerNetworkPolicy),
+				time.Second*10, time.Millisecond*500).Should(Succeed(), "Worker NetworkPolicy should be created: %v", expectedWorkerName)
+		})
+
+		It("Verify Head NetworkPolicy has correct structure", func() {
+			headNetworkPolicy := &networkingv1.NetworkPolicy{}
+			expectedHeadName := rayCluster.Name + "-head"
+			headNamespacedName := types.NamespacedName{Namespace: namespace, Name: expectedHeadName}
+
+			err := k8sClient.Get(ctx, headNamespacedName, headNetworkPolicy)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get Head NetworkPolicy")
 
 			// Verify basic properties
-			Expect(networkPolicy.Name).To(Equal(expectedName))
-			Expect(networkPolicy.Namespace).To(Equal(namespace))
+			Expect(headNetworkPolicy.Name).To(Equal(expectedHeadName))
+			Expect(headNetworkPolicy.Namespace).To(Equal(namespace))
 
 			// Verify labels
 			expectedLabels := map[string]string{
@@ -122,30 +132,68 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 				utils.KubernetesApplicationNameLabelKey: utils.ApplicationName,
 				utils.KubernetesCreatedByLabelKey:       utils.ComponentName,
 			}
-			Expect(networkPolicy.Labels).To(Equal(expectedLabels))
+			Expect(headNetworkPolicy.Labels).To(Equal(expectedLabels))
 
 			// Verify owner reference is set
-			Expect(networkPolicy.OwnerReferences).To(HaveLen(1))
-			Expect(networkPolicy.OwnerReferences[0].Name).To(Equal(rayCluster.Name))
-			Expect(networkPolicy.OwnerReferences[0].Kind).To(Equal("RayCluster"))
+			Expect(headNetworkPolicy.OwnerReferences).To(HaveLen(1))
+			Expect(headNetworkPolicy.OwnerReferences[0].Name).To(Equal(rayCluster.Name))
+			Expect(headNetworkPolicy.OwnerReferences[0].Kind).To(Equal("RayCluster"))
 
 			// Verify policy type
-			Expect(networkPolicy.Spec.PolicyTypes).To(Equal([]networkingv1.PolicyType{networkingv1.PolicyTypeIngress}))
+			Expect(headNetworkPolicy.Spec.PolicyTypes).To(Equal([]networkingv1.PolicyType{networkingv1.PolicyTypeIngress}))
 
-			// Verify pod selector
+			// Verify pod selector targets head pods only
 			expectedPodSelector := metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					utils.RayClusterLabelKey: rayCluster.Name,
+					utils.RayClusterLabelKey:  rayCluster.Name,
+					utils.RayNodeTypeLabelKey: string(rayv1.HeadNode),
 				},
 			}
-			Expect(networkPolicy.Spec.PodSelector).To(Equal(expectedPodSelector))
+			Expect(headNetworkPolicy.Spec.PodSelector).To(Equal(expectedPodSelector))
 
-			// Verify ingress rules - should have 2 peers (intra-cluster + operator)
-			Expect(networkPolicy.Spec.Ingress).To(HaveLen(1))
-			Expect(networkPolicy.Spec.Ingress[0].From).To(HaveLen(2))
+			// Verify ingress rules - should have multiple rules for different access patterns
+			Expect(len(headNetworkPolicy.Spec.Ingress)).To(BeNumerically(">=", 4), "Should have multiple ingress rules")
+
+			// Verify intra-cluster rule exists (first rule)
+			intraClusterRule := headNetworkPolicy.Spec.Ingress[0]
+			Expect(intraClusterRule.From).To(HaveLen(1))
+			expectedIntraClusterPeer := networkingv1.NetworkPolicyPeer{
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						utils.RayClusterLabelKey: rayCluster.Name,
+					},
+				},
+			}
+			Expect(intraClusterRule.From[0]).To(Equal(expectedIntraClusterPeer))
+		})
+
+		It("Verify Worker NetworkPolicy has correct structure", func() {
+			workerNetworkPolicy := &networkingv1.NetworkPolicy{}
+			expectedWorkerName := rayCluster.Name + "-workers"
+			workerNamespacedName := types.NamespacedName{Namespace: namespace, Name: expectedWorkerName}
+
+			err := k8sClient.Get(ctx, workerNamespacedName, workerNetworkPolicy)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get Worker NetworkPolicy")
+
+			// Verify basic properties
+			Expect(workerNetworkPolicy.Name).To(Equal(expectedWorkerName))
+			Expect(workerNetworkPolicy.Namespace).To(Equal(namespace))
+
+			// Verify pod selector targets worker pods only
+			expectedPodSelector := metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					utils.RayClusterLabelKey:  rayCluster.Name,
+					utils.RayNodeTypeLabelKey: string(rayv1.WorkerNode),
+				},
+			}
+			Expect(workerNetworkPolicy.Spec.PodSelector).To(Equal(expectedPodSelector))
+
+			// Verify ingress rules - workers only allow intra-cluster communication
+			Expect(workerNetworkPolicy.Spec.Ingress).To(HaveLen(1))
+			Expect(workerNetworkPolicy.Spec.Ingress[0].From).To(HaveLen(1))
 
 			// Verify intra-cluster peer
-			intraClusterPeer := networkPolicy.Spec.Ingress[0].From[0]
+			intraClusterPeer := workerNetworkPolicy.Spec.Ingress[0].From[0]
 			expectedIntraClusterPeer := networkingv1.NetworkPolicyPeer{
 				PodSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{
@@ -154,41 +202,48 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 				},
 			}
 			Expect(intraClusterPeer).To(Equal(expectedIntraClusterPeer))
-
-			// Verify operator peer
-			operatorPeer := networkPolicy.Spec.Ingress[0].From[1]
-			Expect(operatorPeer.PodSelector).NotTo(BeNil())
-			Expect(operatorPeer.PodSelector.MatchLabels[utils.KubernetesApplicationNameLabelKey]).To(Equal(utils.ApplicationName))
-			Expect(operatorPeer.NamespaceSelector).NotTo(BeNil())
 		})
 
-		It("Delete RayCluster should delete NetworkPolicy", func() {
+		It("Delete RayCluster should delete NetworkPolicies", func() {
 			// Delete the RayCluster
 			err := k8sClient.Delete(ctx, rayCluster)
 			Expect(err).NotTo(HaveOccurred(), "Failed to delete RayCluster")
 
 			// Note: envtest doesn't run garbage collection automatically like a real cluster
-			// In a real cluster, the NetworkPolicy would be automatically deleted due to owner reference
-			// For testing, we manually delete it to simulate garbage collection
-			networkPolicy := &networkingv1.NetworkPolicy{}
-			expectedName := rayCluster.Name + "-default-deny"
-			namespacedName := types.NamespacedName{Namespace: namespace, Name: expectedName}
+			// In a real cluster, the NetworkPolicies would be automatically deleted due to owner reference
+			// For testing, we manually delete them to simulate garbage collection
 
-			// Get the NetworkPolicy to verify it exists
-			err = k8sClient.Get(ctx, namespacedName, networkPolicy)
+			// Clean up head NetworkPolicy
+			headNetworkPolicy := &networkingv1.NetworkPolicy{}
+			expectedHeadName := rayCluster.Name + "-head"
+			headNamespacedName := types.NamespacedName{Namespace: namespace, Name: expectedHeadName}
+
+			err = k8sClient.Get(ctx, headNamespacedName, headNetworkPolicy)
 			if err == nil {
-				// Manually delete since envtest doesn't run garbage collection
-				err = k8sClient.Delete(ctx, networkPolicy)
-				Expect(err).NotTo(HaveOccurred(), "Failed to manually delete NetworkPolicy")
+				err = k8sClient.Delete(ctx, headNetworkPolicy)
+				Expect(err).NotTo(HaveOccurred(), "Failed to manually delete Head NetworkPolicy")
 			}
 
-			// Verify NetworkPolicy is deleted
+			// Clean up worker NetworkPolicy
+			workerNetworkPolicy := &networkingv1.NetworkPolicy{}
+			expectedWorkerName := rayCluster.Name + "-workers"
+			workerNamespacedName := types.NamespacedName{Namespace: namespace, Name: expectedWorkerName}
+
+			err = k8sClient.Get(ctx, workerNamespacedName, workerNetworkPolicy)
+			if err == nil {
+				err = k8sClient.Delete(ctx, workerNetworkPolicy)
+				Expect(err).NotTo(HaveOccurred(), "Failed to manually delete Worker NetworkPolicy")
+			}
+
+			// Verify both NetworkPolicies are deleted
 			Eventually(
 				func() bool {
-					err := k8sClient.Get(ctx, namespacedName, networkPolicy)
-					return err != nil && client.IgnoreNotFound(err) == nil
+					headErr := k8sClient.Get(ctx, headNamespacedName, headNetworkPolicy)
+					workerErr := k8sClient.Get(ctx, workerNamespacedName, workerNetworkPolicy)
+					return (headErr != nil && client.IgnoreNotFound(headErr) == nil) &&
+						(workerErr != nil && client.IgnoreNotFound(workerErr) == nil)
 				},
-				time.Second*5, time.Millisecond*500).Should(BeTrue(), "NetworkPolicy should be deleted")
+				time.Second*5, time.Millisecond*500).Should(BeTrue(), "Both NetworkPolicies should be deleted")
 		})
 	})
 
@@ -215,21 +270,24 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 				time.Second*3, time.Millisecond*500).Should(Succeed(), "Should be able to see RayCluster: %v", rayCluster.Name)
 		})
 
-		It("Check NetworkPolicy includes RayJob peer", func() {
-			networkPolicy := &networkingv1.NetworkPolicy{}
-			expectedName := rayCluster.Name + "-default-deny"
-			namespacedName := types.NamespacedName{Namespace: namespace, Name: expectedName}
+		It("Check Head NetworkPolicy includes RayJob peer", func() {
+			headNetworkPolicy := &networkingv1.NetworkPolicy{}
+			expectedHeadName := rayCluster.Name + "-head"
+			headNamespacedName := types.NamespacedName{Namespace: namespace, Name: expectedHeadName}
 
 			Eventually(
-				getResourceFunc(ctx, namespacedName, networkPolicy),
-				time.Second*10, time.Millisecond*500).Should(Succeed(), "NetworkPolicy should be created")
+				getResourceFunc(ctx, headNamespacedName, headNetworkPolicy),
+				time.Second*10, time.Millisecond*500).Should(Succeed(), "Head NetworkPolicy should be created")
 
-			// Should have 3 peers: intra-cluster + operator + rayjob
-			Expect(networkPolicy.Spec.Ingress).To(HaveLen(1))
-			Expect(networkPolicy.Spec.Ingress[0].From).To(HaveLen(3))
+			// Should have additional RayJob rule (last rule)
+			Expect(len(headNetworkPolicy.Spec.Ingress)).To(BeNumerically(">=", 5), "Should have additional RayJob ingress rule")
 
-			// Verify RayJob peer (should be the third peer)
-			rayJobPeer := networkPolicy.Spec.Ingress[0].From[2]
+			// Find the RayJob rule (should be the last rule)
+			rayJobRule := headNetworkPolicy.Spec.Ingress[len(headNetworkPolicy.Spec.Ingress)-1]
+			Expect(rayJobRule.From).To(HaveLen(1), "RayJob rule should have one peer")
+
+			// Verify RayJob peer
+			rayJobPeer := rayJobRule.From[0]
 			expectedRayJobPeer := networkingv1.NetworkPolicyPeer{
 				PodSelector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{
@@ -250,9 +308,9 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 		ctx := context.Background()
 		namespace := "default"
 		rayCluster := rayClusterTemplateForNetworkPolicy("raycluster-existing-np", namespace)
-		existingNetworkPolicy := &networkingv1.NetworkPolicy{
+		existingHeadNetworkPolicy := &networkingv1.NetworkPolicy{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      rayCluster.Name + "-default-deny",
+				Name:      rayCluster.Name + "-head",
 				Namespace: namespace,
 				Labels: map[string]string{
 					"test": "existing",
@@ -264,9 +322,9 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 			},
 		}
 
-		It("Create NetworkPolicy before RayCluster", func() {
-			err := k8sClient.Create(ctx, existingNetworkPolicy)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create existing NetworkPolicy")
+		It("Create Head NetworkPolicy before RayCluster", func() {
+			err := k8sClient.Create(ctx, existingHeadNetworkPolicy)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create existing Head NetworkPolicy")
 		})
 
 		It("Create RayCluster should handle existing NetworkPolicy gracefully", func() {
@@ -276,22 +334,38 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 				getResourceFunc(ctx, client.ObjectKey{Name: rayCluster.Name, Namespace: namespace}, rayCluster),
 				time.Second*3, time.Millisecond*500).Should(Succeed(), "Should be able to see RayCluster: %v", rayCluster.Name)
 
-			// NetworkPolicy should still exist (not updated, just ignored)
-			networkPolicy := &networkingv1.NetworkPolicy{}
-			namespacedName := types.NamespacedName{Namespace: namespace, Name: existingNetworkPolicy.Name}
-			err = k8sClient.Get(ctx, namespacedName, networkPolicy)
-			Expect(err).NotTo(HaveOccurred(), "Existing NetworkPolicy should still exist")
+			// Head NetworkPolicy should be updated by the controller
+			headNetworkPolicy := &networkingv1.NetworkPolicy{}
+			headNamespacedName := types.NamespacedName{Namespace: namespace, Name: existingHeadNetworkPolicy.Name}
+			err = k8sClient.Get(ctx, headNamespacedName, headNetworkPolicy)
+			Expect(err).NotTo(HaveOccurred(), "Head NetworkPolicy should exist")
 
-			// Original labels should be preserved
-			Expect(networkPolicy.Labels["test"]).To(Equal("existing"))
+			// Worker NetworkPolicy should be created
+			workerNetworkPolicy := &networkingv1.NetworkPolicy{}
+			expectedWorkerName := rayCluster.Name + "-workers"
+			workerNamespacedName := types.NamespacedName{Namespace: namespace, Name: expectedWorkerName}
+			Eventually(
+				getResourceFunc(ctx, workerNamespacedName, workerNetworkPolicy),
+				time.Second*10, time.Millisecond*500).Should(Succeed(), "Worker NetworkPolicy should be created")
 		})
 
 		It("Clean up resources", func() {
 			err := k8sClient.Delete(ctx, rayCluster)
 			Expect(err).NotTo(HaveOccurred(), "Failed to delete RayCluster")
 
-			err = k8sClient.Delete(ctx, existingNetworkPolicy)
-			Expect(err).NotTo(HaveOccurred(), "Failed to delete existing NetworkPolicy")
+			err = k8sClient.Delete(ctx, existingHeadNetworkPolicy)
+			// Policy might have been updated by controller, ignore delete errors
+			_ = err
+
+			// Clean up worker policy if it exists
+			workerNetworkPolicy := &networkingv1.NetworkPolicy{}
+			expectedWorkerName := rayCluster.Name + "-workers"
+			workerNamespacedName := types.NamespacedName{Namespace: namespace, Name: expectedWorkerName}
+			err = k8sClient.Get(ctx, workerNamespacedName, workerNetworkPolicy)
+			if err == nil {
+				err = k8sClient.Delete(ctx, workerNetworkPolicy)
+				Expect(err).NotTo(HaveOccurred(), "Failed to delete worker NetworkPolicy")
+			}
 		})
 	})
 

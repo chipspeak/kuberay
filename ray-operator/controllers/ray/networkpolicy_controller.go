@@ -84,7 +84,7 @@ func (r *NetworkPolicyController) Reconcile(ctx context.Context, req ctrl.Reques
 }
 
 // getKubeRayNamespaces returns the list of KubeRay operator namespaces
-func (r *NetworkPolicyController) getKubeRayNamespaces(ctx context.Context) []string {
+func (r *NetworkPolicyController) getKubeRayNamespaces(_ context.Context) []string {
 	operatorNamespace := os.Getenv("POD_NAMESPACE")
 	if operatorNamespace == "" {
 		operatorNamespace = "ray-system" // fallback

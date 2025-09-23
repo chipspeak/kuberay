@@ -1,6 +1,7 @@
 package ray
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -116,7 +117,7 @@ func setupNetworkPolicyTest(_ *testing.T) {
 	}
 }
 
-func TestBuildNetworkPolicy_BasicCluster(t *testing.T) {
+func TestBuildHeadNetworkPolicy_BasicCluster(t *testing.T) {
 	setupNetworkPolicyTest(t)
 
 	// Set environment for testing
@@ -124,11 +125,12 @@ func TestBuildNetworkPolicy_BasicCluster(t *testing.T) {
 	os.Setenv("POD_NAMESPACE", "ray-system")
 	defer os.Setenv("POD_NAMESPACE", originalEnv)
 
-	// Test building NetworkPolicy for basic cluster
-	policy := testNetworkPolicyController.buildNetworkPolicy(testRayClusterBasic)
+	// Test building head NetworkPolicy for basic cluster
+	kubeRayNamespaces := []string{"ray-system"}
+	policy := testNetworkPolicyController.buildHeadNetworkPolicy(testRayClusterBasic, kubeRayNamespaces)
 
 	// Verify basic properties
-	expectedName := testRayClusterBasic.Name + "-default-deny"
+	expectedName := testRayClusterBasic.Name + "-head"
 	assert.Equal(t, expectedName, policy.Name)
 	assert.Equal(t, testRayClusterBasic.Namespace, policy.Namespace)
 
@@ -143,17 +145,81 @@ func TestBuildNetworkPolicy_BasicCluster(t *testing.T) {
 	// Verify policy type
 	assert.Equal(t, []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}, policy.Spec.PolicyTypes)
 
-	// Verify pod selector
+	// Verify pod selector targets head pods only
 	expectedPodSelector := metav1.LabelSelector{
 		MatchLabels: map[string]string{
-			utils.RayClusterLabelKey: testRayClusterBasic.Name,
+			utils.RayClusterLabelKey:  testRayClusterBasic.Name,
+			utils.RayNodeTypeLabelKey: string(rayv1.HeadNode),
 		},
 	}
 	assert.Equal(t, expectedPodSelector, policy.Spec.PodSelector)
 
-	// Verify ingress rules - should have 2 peers (intra-cluster + operator)
+	// Verify ingress rules - should have multiple rules for different access patterns
+	assert.Greater(t, len(policy.Spec.Ingress), 3, "Should have multiple ingress rules")
+
+	// Verify intra-cluster rule (first rule)
+	intraClusterRule := policy.Spec.Ingress[0]
+	assert.Len(t, intraClusterRule.From, 1)
+	expectedIntraClusterPeer := networkingv1.NetworkPolicyPeer{
+		PodSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{
+				utils.RayClusterLabelKey: testRayClusterBasic.Name,
+			},
+		},
+	}
+	assert.Equal(t, expectedIntraClusterPeer, intraClusterRule.From[0])
+
+	// Verify dashboard access rule (second rule) - allows access to ports 10001 and 8265
+	dashboardRule := policy.Spec.Ingress[1]
+	assert.Len(t, dashboardRule.Ports, 2, "Dashboard rule should have 2 ports")
+	assert.Len(t, dashboardRule.From, 1, "Dashboard rule should allow from any pod")
+
+	// Check for ports 10001 and 8265
+	portFound10001 := false
+	portFound8265 := false
+	for _, port := range dashboardRule.Ports {
+		if port.Port.IntVal == 10001 {
+			portFound10001 = true
+		}
+		if port.Port.IntVal == 8265 {
+			portFound8265 = true
+		}
+	}
+	assert.True(t, portFound10001, "Should include port 10001")
+	assert.True(t, portFound8265, "Should include port 8265")
+}
+
+func TestBuildWorkerNetworkPolicy_BasicCluster(t *testing.T) {
+	setupNetworkPolicyTest(t)
+
+	// Test building worker NetworkPolicy for basic cluster
+	policy := testNetworkPolicyController.buildWorkerNetworkPolicy(testRayClusterBasic)
+
+	// Verify basic properties
+	expectedName := testRayClusterBasic.Name + "-workers"
+	assert.Equal(t, expectedName, policy.Name)
+	assert.Equal(t, testRayClusterBasic.Namespace, policy.Namespace)
+
+	// Verify labels
+	expectedLabels := map[string]string{
+		utils.RayClusterLabelKey:                testRayClusterBasic.Name,
+		utils.KubernetesApplicationNameLabelKey: utils.ApplicationName,
+		utils.KubernetesCreatedByLabelKey:       utils.ComponentName,
+	}
+	assert.Equal(t, expectedLabels, policy.Labels)
+
+	// Verify pod selector targets worker pods only
+	expectedPodSelector := metav1.LabelSelector{
+		MatchLabels: map[string]string{
+			utils.RayClusterLabelKey:  testRayClusterBasic.Name,
+			utils.RayNodeTypeLabelKey: string(rayv1.WorkerNode),
+		},
+	}
+	assert.Equal(t, expectedPodSelector, policy.Spec.PodSelector)
+
+	// Verify ingress rules - workers only allow intra-cluster communication
 	require.Len(t, policy.Spec.Ingress, 1)
-	require.Len(t, policy.Spec.Ingress[0].From, 2)
+	require.Len(t, policy.Spec.Ingress[0].From, 1)
 
 	// Verify intra-cluster peer
 	intraClusterPeer := policy.Spec.Ingress[0].From[0]
@@ -165,25 +231,9 @@ func TestBuildNetworkPolicy_BasicCluster(t *testing.T) {
 		},
 	}
 	assert.Equal(t, expectedIntraClusterPeer, intraClusterPeer)
-
-	// Verify operator peer
-	operatorPeer := policy.Spec.Ingress[0].From[1]
-	expectedOperatorPeer := networkingv1.NetworkPolicyPeer{
-		PodSelector: &metav1.LabelSelector{
-			MatchLabels: map[string]string{
-				utils.KubernetesApplicationNameLabelKey: utils.ApplicationName,
-			},
-		},
-		NamespaceSelector: &metav1.LabelSelector{
-			MatchLabels: map[string]string{
-				"kubernetes.io/metadata.name": "ray-system",
-			},
-		},
-	}
-	assert.Equal(t, expectedOperatorPeer, operatorPeer)
 }
 
-func TestBuildNetworkPolicy_ClusterWithRayJob(t *testing.T) {
+func TestBuildHeadNetworkPolicy_ClusterWithRayJob(t *testing.T) {
 	setupNetworkPolicyTest(t)
 
 	// Set environment for testing
@@ -191,19 +241,23 @@ func TestBuildNetworkPolicy_ClusterWithRayJob(t *testing.T) {
 	os.Setenv("POD_NAMESPACE", "ray-system")
 	defer os.Setenv("POD_NAMESPACE", originalEnv)
 
-	// Test building NetworkPolicy for cluster owned by RayJob
-	policy := testNetworkPolicyController.buildNetworkPolicy(testRayClusterWithRayJob)
+	// Test building head NetworkPolicy for cluster owned by RayJob
+	kubeRayNamespaces := []string{"ray-system"}
+	policy := testNetworkPolicyController.buildHeadNetworkPolicy(testRayClusterWithRayJob, kubeRayNamespaces)
 
 	// Verify basic properties
-	expectedName := testRayClusterWithRayJob.Name + "-default-deny"
+	expectedName := testRayClusterWithRayJob.Name + "-head"
 	assert.Equal(t, expectedName, policy.Name)
 
-	// Verify ingress rules - should have 3 peers (intra-cluster + operator + rayjob)
-	require.Len(t, policy.Spec.Ingress, 1)
-	require.Len(t, policy.Spec.Ingress[0].From, 3)
+	// Verify ingress rules - should have additional RayJob rule
+	assert.Greater(t, len(policy.Spec.Ingress), 4, "Should have additional RayJob ingress rule")
 
-	// Verify RayJob peer (should be the third peer)
-	rayJobPeer := policy.Spec.Ingress[0].From[2]
+	// Find the RayJob rule (should be the last rule)
+	rayJobRule := policy.Spec.Ingress[len(policy.Spec.Ingress)-1]
+	require.Len(t, rayJobRule.From, 1, "RayJob rule should have one peer")
+
+	// Verify RayJob peer
+	rayJobPeer := rayJobRule.From[0]
 	expectedRayJobPeer := networkingv1.NetworkPolicyPeer{
 		PodSelector: &metav1.LabelSelector{
 			MatchLabels: map[string]string{
@@ -214,7 +268,99 @@ func TestBuildNetworkPolicy_ClusterWithRayJob(t *testing.T) {
 	assert.Equal(t, expectedRayJobPeer, rayJobPeer)
 }
 
-func TestBuildNetworkPolicy_EnvironmentFallback(t *testing.T) {
+func TestBuildHeadNetworkPolicy_MonitoringAccess(t *testing.T) {
+	setupNetworkPolicyTest(t)
+
+	// Test building head NetworkPolicy with monitoring access
+	kubeRayNamespaces := []string{"ray-system"}
+	policy := testNetworkPolicyController.buildHeadNetworkPolicy(testRayClusterBasic, kubeRayNamespaces)
+
+	// Find the monitoring rule (should have port 8080)
+	var monitoringRule *networkingv1.NetworkPolicyIngressRule
+	for _, rule := range policy.Spec.Ingress {
+		for _, port := range rule.Ports {
+			if port.Port != nil && port.Port.IntVal == 8080 {
+				monitoringRule = &rule
+				break
+			}
+		}
+		if monitoringRule != nil {
+			break
+		}
+	}
+
+	require.NotNil(t, monitoringRule, "Should have monitoring rule with port 8080")
+	assert.Len(t, monitoringRule.Ports, 1, "Monitoring rule should have one port")
+	assert.Equal(t, int32(8080), monitoringRule.Ports[0].Port.IntVal, "Should be port 8080")
+
+	// Should allow from multiple monitoring sources
+	assert.Greater(t, len(monitoringRule.From), 1, "Should allow from multiple monitoring sources")
+
+	// Check for OpenShift monitoring namespace
+	foundOpenShiftMonitoring := false
+	for _, peer := range monitoringRule.From {
+		if peer.NamespaceSelector != nil {
+			for _, req := range peer.NamespaceSelector.MatchExpressions {
+				if req.Key == "kubernetes.io/metadata.name" && contains(req.Values, "openshift-monitoring") {
+					foundOpenShiftMonitoring = true
+					break
+				}
+			}
+		}
+	}
+	assert.True(t, foundOpenShiftMonitoring, "Should allow OpenShift monitoring namespace")
+}
+
+func TestBuildHeadNetworkPolicy_SecuredPorts(t *testing.T) {
+	setupNetworkPolicyTest(t)
+
+	// Test building head NetworkPolicy with secured ports (mTLS)
+	kubeRayNamespaces := []string{"ray-system"}
+	policy := testNetworkPolicyController.buildHeadNetworkPolicy(testRayClusterBasic, kubeRayNamespaces)
+
+	// Find the secured ports rule
+	var securedPortsRule *networkingv1.NetworkPolicyIngressRule
+	for _, rule := range policy.Spec.Ingress {
+		for _, port := range rule.Ports {
+			if port.Port != nil && port.Port.IntVal == 8443 {
+				securedPortsRule = &rule
+				break
+			}
+		}
+		if securedPortsRule != nil {
+			break
+		}
+	}
+
+	require.NotNil(t, securedPortsRule, "Should have secured ports rule")
+	assert.Len(t, securedPortsRule.Ports, 2, "Should have 2 secured ports")
+
+	// Check for mTLS ports 8443 and 10001
+	portFound8443 := false
+	portFound10001 := false
+	for _, port := range securedPortsRule.Ports {
+		if port.Port.IntVal == 8443 {
+			portFound8443 = true
+		}
+		if port.Port.IntVal == 10001 {
+			portFound10001 = true
+		}
+	}
+	assert.True(t, portFound8443, "Should include mTLS port 8443")
+	assert.True(t, portFound10001, "Should include mTLS port 10001")
+}
+
+// Helper function to check if slice contains string
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+func TestGetKubeRayNamespaces_EnvironmentFallback(t *testing.T) {
 	setupNetworkPolicyTest(t)
 
 	// Test fallback when POD_NAMESPACE is not set
@@ -222,12 +368,24 @@ func TestBuildNetworkPolicy_EnvironmentFallback(t *testing.T) {
 	os.Unsetenv("POD_NAMESPACE")
 	defer os.Setenv("POD_NAMESPACE", originalEnv)
 
-	policy := testNetworkPolicyController.buildNetworkPolicy(testRayClusterBasic)
+	namespaces := testNetworkPolicyController.getKubeRayNamespaces(context.Background())
 
-	// Verify operator peer uses fallback namespace
-	operatorPeer := policy.Spec.Ingress[0].From[1]
-	assert.Equal(t, map[string]string{"kubernetes.io/metadata.name": "ray-system"},
-		operatorPeer.NamespaceSelector.MatchLabels)
+	// Should fallback to "ray-system" namespace
+	assert.Equal(t, []string{"ray-system"}, namespaces)
+}
+
+func TestGetKubeRayNamespaces_WithEnvironment(t *testing.T) {
+	setupNetworkPolicyTest(t)
+
+	// Test with POD_NAMESPACE set
+	originalEnv := os.Getenv("POD_NAMESPACE")
+	os.Setenv("POD_NAMESPACE", "custom-ray-system")
+	defer os.Setenv("POD_NAMESPACE", originalEnv)
+
+	namespaces := testNetworkPolicyController.getKubeRayNamespaces(context.Background())
+
+	// Should use the custom namespace
+	assert.Equal(t, []string{"custom-ray-system"}, namespaces)
 }
 
 func TestBuildRayJobPeer_NoOwner(t *testing.T) {
@@ -296,7 +454,7 @@ func TestBuildRayJobPeer_MultipleOwners(t *testing.T) {
 	assert.Equal(t, expectedPeer, peer)
 }
 
-func TestBuildNetworkPolicy_DifferentNamespace(t *testing.T) {
+func TestBuildHeadNetworkPolicy_DifferentNamespace(t *testing.T) {
 	setupNetworkPolicyTest(t)
 
 	// Set custom operator namespace
@@ -308,18 +466,18 @@ func TestBuildNetworkPolicy_DifferentNamespace(t *testing.T) {
 	rayCluster := testRayClusterBasic.DeepCopy()
 	rayCluster.Namespace = "custom-namespace"
 
-	policy := testNetworkPolicyController.buildNetworkPolicy(rayCluster)
+	kubeRayNamespaces := []string{"custom-ray-system"}
+	headPolicy := testNetworkPolicyController.buildHeadNetworkPolicy(rayCluster, kubeRayNamespaces)
 
 	// Verify NetworkPolicy is created in the same namespace as RayCluster
-	assert.Equal(t, "custom-namespace", policy.Namespace)
+	assert.Equal(t, "custom-namespace", headPolicy.Namespace)
 
-	// Verify operator peer references custom namespace
-	operatorPeer := policy.Spec.Ingress[0].From[1]
-	assert.Equal(t, map[string]string{"kubernetes.io/metadata.name": "custom-ray-system"},
-		operatorPeer.NamespaceSelector.MatchLabels)
+	// Verify head policy name
+	expectedHeadName := rayCluster.Name + "-head"
+	assert.Equal(t, expectedHeadName, headPolicy.Name)
 }
 
-func TestBuildNetworkPolicy_LongClusterName(t *testing.T) {
+func TestBuildHeadNetworkPolicy_LongClusterName(t *testing.T) {
 	setupNetworkPolicyTest(t)
 
 	// Test with long cluster name
@@ -327,17 +485,19 @@ func TestBuildNetworkPolicy_LongClusterName(t *testing.T) {
 	rayCluster := testRayClusterBasic.DeepCopy()
 	rayCluster.Name = longName
 
-	policy := testNetworkPolicyController.buildNetworkPolicy(rayCluster)
+	kubeRayNamespaces := []string{"ray-system"}
+	headPolicy := testNetworkPolicyController.buildHeadNetworkPolicy(rayCluster, kubeRayNamespaces)
 
 	// Verify name is constructed correctly
-	expectedName := longName + "-default-deny"
-	assert.Equal(t, expectedName, policy.Name)
+	expectedHeadName := longName + "-head"
+	assert.Equal(t, expectedHeadName, headPolicy.Name)
 
-	// Verify pod selector uses correct cluster name
+	// Verify pod selector uses correct cluster name and targets head pods
 	expectedPodSelector := metav1.LabelSelector{
 		MatchLabels: map[string]string{
-			utils.RayClusterLabelKey: longName,
+			utils.RayClusterLabelKey:  longName,
+			utils.RayNodeTypeLabelKey: string(rayv1.HeadNode),
 		},
 	}
-	assert.Equal(t, expectedPodSelector, policy.Spec.PodSelector)
+	assert.Equal(t, expectedPodSelector, headPolicy.Spec.PodSelector)
 }
