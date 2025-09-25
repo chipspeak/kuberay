@@ -400,19 +400,25 @@ func TestBuildHeadNetworkPolicy_MonitoringAccess(t *testing.T) {
 	// Should allow from monitoring sources (single From with multiple namespaces)
 	assert.Len(t, monitoringRule.From, 1, "Should have one monitoring peer with multiple namespaces")
 
-	// Check for OpenShift monitoring namespace
+	// Check for both OpenShift monitoring and Prometheus namespaces
 	foundOpenShiftMonitoring := false
+	foundPrometheus := false
 	for _, peer := range monitoringRule.From {
 		if peer.NamespaceSelector != nil {
 			for _, req := range peer.NamespaceSelector.MatchExpressions {
-				if req.Key == "kubernetes.io/metadata.name" && contains(req.Values, "openshift-monitoring") {
-					foundOpenShiftMonitoring = true
-					break
+				if req.Key == "kubernetes.io/metadata.name" {
+					if contains(req.Values, "openshift-monitoring") {
+						foundOpenShiftMonitoring = true
+					}
+					if contains(req.Values, "prometheus") {
+						foundPrometheus = true
+					}
 				}
 			}
 		}
 	}
 	assert.True(t, foundOpenShiftMonitoring, "Should allow OpenShift monitoring namespace")
+	assert.True(t, foundPrometheus, "Should allow Prometheus namespace")
 }
 
 func TestBuildHeadNetworkPolicy_SecuredPorts(t *testing.T) {
