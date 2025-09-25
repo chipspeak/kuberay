@@ -145,21 +145,26 @@ func (r *NetworkPolicyController) buildHeadNetworkPolicy(instance *rayv1.RayClus
 		utils.KubernetesCreatedByLabelKey:       utils.ComponentName,
 	}
 
-	// Build secured ports - including mTLS port
+	// Build secured ports - mTLS port always included
 	allSecuredPorts := []networkingv1.NetworkPolicyPort{
 		{
 			Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
 			Port:     &[]intstr.IntOrString{intstr.FromInt(8443)}[0],
 		},
-		{
+	}
+
+	// Check if mTLS is enabled by looking for TLS configuration in RayCluster
+	if r.isMTLSEnabled(instance) {
+		// If mTLS is enabled, also secure port 10001
+		allSecuredPorts = append(allSecuredPorts, networkingv1.NetworkPolicyPort{
 			Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
 			Port:     &[]intstr.IntOrString{intstr.FromInt(10001)}[0],
-		},
+		})
 	}
 
 	// Build ingress rules
 	ingressRules := []networkingv1.NetworkPolicyIngressRule{
-		// Allow intra-cluster communication
+		// Rule 1: Intra-cluster communication - NO PORTS (allows all ports)
 		{
 			From: []networkingv1.NetworkPolicyPeer{
 				{
@@ -170,26 +175,29 @@ func (r *NetworkPolicyController) buildHeadNetworkPolicy(instance *rayv1.RayClus
 					},
 				},
 			},
+			// No Ports specified = allow all ports
 		},
-		// Allow dashboard and GCS access from any pod (for external access)
+		// Rule 2: External access to dashboard and client ports from any pod in namespace
 		{
+			From: []networkingv1.NetworkPolicyPeer{
+				{
+					PodSelector: &metav1.LabelSelector{
+						// Empty MatchLabels = any pod in same namespace
+					},
+				},
+			},
 			Ports: []networkingv1.NetworkPolicyPort{
 				{
 					Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
-					Port:     &[]intstr.IntOrString{intstr.FromInt(10001)}[0],
+					Port:     &[]intstr.IntOrString{intstr.FromInt(10001)}[0], // Client
 				},
 				{
 					Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
-					Port:     &[]intstr.IntOrString{intstr.FromInt(8265)}[0],
-				},
-			},
-			From: []networkingv1.NetworkPolicyPeer{
-				{
-					PodSelector: &metav1.LabelSelector{},
+					Port:     &[]intstr.IntOrString{intstr.FromInt(8265)}[0], // Dashboard
 				},
 			},
 		},
-		// Allow KubeRay operator access
+		// Rule 3: KubeRay operator access
 		{
 			From: []networkingv1.NetworkPolicyPeer{
 				{
@@ -212,64 +220,40 @@ func (r *NetworkPolicyController) buildHeadNetworkPolicy(instance *rayv1.RayClus
 			Ports: []networkingv1.NetworkPolicyPort{
 				{
 					Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
-					Port:     &[]intstr.IntOrString{intstr.FromInt(8265)}[0],
+					Port:     &[]intstr.IntOrString{intstr.FromInt(8265)}[0], // Dashboard
 				},
 				{
 					Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
-					Port:     &[]intstr.IntOrString{intstr.FromInt(10001)}[0],
+					Port:     &[]intstr.IntOrString{intstr.FromInt(10001)}[0], // Client
 				},
 			},
 		},
-		// Allow Prometheus monitoring access from any namespace
+		// Rule 4: Monitoring access
 		{
+			From: []networkingv1.NetworkPolicyPeer{
+				{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchExpressions: []metav1.LabelSelectorRequirement{
+							{
+								Key:      corev1.LabelMetadataName,
+								Operator: metav1.LabelSelectorOpIn,
+								Values:   []string{"openshift-monitoring", "prometheus", "redhat-ods-monitoring"},
+							},
+						},
+					},
+				},
+			},
 			Ports: []networkingv1.NetworkPolicyPort{
 				{
 					Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
-					Port:     &[]intstr.IntOrString{intstr.FromInt(8080)}[0],
-				},
-			},
-			From: []networkingv1.NetworkPolicyPeer{
-				// Allow Prometheus pods from any namespace
-				{
-					PodSelector: &metav1.LabelSelector{
-						MatchExpressions: []metav1.LabelSelectorRequirement{
-							{
-								Key:      "app.kubernetes.io/name",
-								Operator: metav1.LabelSelectorOpIn,
-								Values:   []string{"prometheus", "prometheus-server", "prometheus-operator"},
-							},
-						},
-					},
-				},
-				// Allow OpenShift monitoring namespace (backward compatibility)
-				{
-					NamespaceSelector: &metav1.LabelSelector{
-						MatchExpressions: []metav1.LabelSelectorRequirement{
-							{
-								Key:      corev1.LabelMetadataName,
-								Operator: metav1.LabelSelectorOpIn,
-								Values:   []string{"openshift-monitoring"},
-							},
-						},
-					},
-				},
-				// Allow common monitoring namespaces
-				{
-					NamespaceSelector: &metav1.LabelSelector{
-						MatchExpressions: []metav1.LabelSelectorRequirement{
-							{
-								Key:      corev1.LabelMetadataName,
-								Operator: metav1.LabelSelectorOpIn,
-								Values:   []string{"monitoring", "prometheus", "grafana", "observability"},
-							},
-						},
-					},
+					Port:     &[]intstr.IntOrString{intstr.FromInt(8080)}[0], // Metrics
 				},
 			},
 		},
-		// Allow secured ports
+		// Rule 5: Secured ports - NO FROM (allows all)
 		{
 			Ports: allSecuredPorts,
+			// No From specified = allow from anywhere
 		},
 	}
 
@@ -356,6 +340,43 @@ func (r *NetworkPolicyController) buildRayJobPeer(instance *rayv1.RayCluster) *n
 	}
 	// No RayJob owner = no RayJob submitter pods to allow
 	return nil
+}
+
+// isMTLSEnabled checks if mTLS is enabled for the RayCluster
+// This looks for TLS-related environment variables or configuration
+func (r *NetworkPolicyController) isMTLSEnabled(instance *rayv1.RayCluster) bool {
+	// Check head group for TLS environment variables
+	if r.checkContainersForMTLS(instance.Spec.HeadGroupSpec.Template.Spec.Containers) {
+		return true
+	}
+
+	// Check worker groups for TLS environment variables
+	for _, workerGroup := range instance.Spec.WorkerGroupSpecs {
+		if r.checkContainersForMTLS(workerGroup.Template.Spec.Containers) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// checkContainersForMTLS checks if any container has mTLS-related environment variables
+func (r *NetworkPolicyController) checkContainersForMTLS(containers []corev1.Container) bool {
+	for _, container := range containers {
+		for _, env := range container.Env {
+			// Check for common Ray TLS environment variables
+			if env.Name == "RAY_USE_TLS" && env.Value == "1" {
+				return true
+			}
+			if env.Name == "RAY_TLS_SERVER_CERT" && env.Value != "" {
+				return true
+			}
+			if env.Name == "RAY_TLS_SERVER_KEY" && env.Value != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // SetupWithManager sets up the controller with the Manager

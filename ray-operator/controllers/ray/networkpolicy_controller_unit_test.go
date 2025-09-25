@@ -154,12 +154,15 @@ func TestBuildHeadNetworkPolicy_BasicCluster(t *testing.T) {
 	}
 	assert.Equal(t, expectedPodSelector, policy.Spec.PodSelector)
 
-	// Verify ingress rules - should have multiple rules for different access patterns
-	assert.Greater(t, len(policy.Spec.Ingress), 3, "Should have multiple ingress rules")
+	// Verify ingress rules - CodeFlare 5-rule pattern (+ optional RayJob rule)
+	assert.GreaterOrEqual(t, len(policy.Spec.Ingress), 5, "Should have at least 5 ingress rules")
+	assert.LessOrEqual(t, len(policy.Spec.Ingress), 6, "Should have at most 6 ingress rules (including optional RayJob)")
 
-	// Verify intra-cluster rule (first rule)
+	// Verify Rule 1: Intra-cluster communication - NO PORTS (allows all ports)
 	intraClusterRule := policy.Spec.Ingress[0]
-	assert.Len(t, intraClusterRule.From, 1)
+	assert.Len(t, intraClusterRule.From, 1, "Intra-cluster rule should have one peer")
+	assert.Empty(t, intraClusterRule.Ports, "Intra-cluster rule should have NO ports (allows all)")
+
 	expectedIntraClusterPeer := networkingv1.NetworkPolicyPeer{
 		PodSelector: &metav1.LabelSelector{
 			MatchLabels: map[string]string{
@@ -167,26 +170,127 @@ func TestBuildHeadNetworkPolicy_BasicCluster(t *testing.T) {
 			},
 		},
 	}
-	assert.Equal(t, expectedIntraClusterPeer, intraClusterRule.From[0])
+	assert.Equal(t, expectedIntraClusterPeer, intraClusterRule.From[0], "Should allow cluster members")
 
-	// Verify dashboard access rule (second rule) - allows access to ports 10001 and 8265
-	dashboardRule := policy.Spec.Ingress[1]
-	assert.Len(t, dashboardRule.Ports, 2, "Dashboard rule should have 2 ports")
-	assert.Len(t, dashboardRule.From, 1, "Dashboard rule should allow from any pod")
+	// Verify Rule 2: External access to dashboard and client ports from any pod in namespace
+	externalRule := policy.Spec.Ingress[1]
+	assert.Len(t, externalRule.From, 1, "External rule should have one peer")
+	assert.Len(t, externalRule.Ports, 2, "External rule should have 2 ports (10001, 8265)")
 
-	// Check for ports 10001 and 8265
+	// Verify empty pod selector (any pod in namespace)
+	expectedAnyPodPeer := networkingv1.NetworkPolicyPeer{
+		PodSelector: &metav1.LabelSelector{
+			// Empty MatchLabels = any pod in same namespace
+		},
+	}
+	assert.Equal(t, expectedAnyPodPeer, externalRule.From[0], "Should allow any pod in namespace")
+
+	// Check ports (10001, 8265)
 	portFound10001 := false
 	portFound8265 := false
-	for _, port := range dashboardRule.Ports {
-		if port.Port.IntVal == 10001 {
+	for _, port := range externalRule.Ports {
+		switch port.Port.IntVal {
+		case 10001:
 			portFound10001 = true
-		}
-		if port.Port.IntVal == 8265 {
+		case 8265:
 			portFound8265 = true
 		}
 	}
-	assert.True(t, portFound10001, "Should include port 10001")
-	assert.True(t, portFound8265, "Should include port 8265")
+	assert.True(t, portFound10001, "Should include client port 10001")
+	assert.True(t, portFound8265, "Should include dashboard port 8265")
+
+	// Verify Rule 3: KubeRay operator access
+	operatorRule := policy.Spec.Ingress[2]
+	assert.Len(t, operatorRule.From, 1, "Operator rule should have one peer")
+	assert.Len(t, operatorRule.Ports, 2, "Operator rule should have 2 ports (8265, 10001)")
+
+	// Verify Rule 4: Monitoring access
+	monitoringRule := policy.Spec.Ingress[3]
+	assert.Len(t, monitoringRule.From, 1, "Monitoring rule should have one peer")
+	assert.Len(t, monitoringRule.Ports, 1, "Monitoring rule should have 1 port (8080 only)")
+	assert.Equal(t, int32(8080), monitoringRule.Ports[0].Port.IntVal, "Should be monitoring port 8080")
+
+	// Verify Rule 5: Secured ports - NO FROM (allows all)
+	securedRule := policy.Spec.Ingress[4]
+	assert.Empty(t, securedRule.From, "Secured ports rule should have NO from (allows all)")
+	assert.GreaterOrEqual(t, len(securedRule.Ports), 1, "Secured ports rule should have at least 1 port (8443)")
+
+	// Check for mTLS port 8443 (always present)
+	portFound8443 := false
+	for _, port := range securedRule.Ports {
+		if port.Port.IntVal == 8443 {
+			portFound8443 = true
+		}
+	}
+	assert.True(t, portFound8443, "Should include mTLS port 8443")
+}
+
+func TestBuildHeadNetworkPolicy_WithMTLS(t *testing.T) {
+	setupNetworkPolicyTest(t)
+
+	// Create RayCluster with mTLS configuration
+	rayClusterWithMTLS := &rayv1.RayCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster-mtls",
+			Namespace: "default",
+		},
+		Spec: rayv1.RayClusterSpec{
+			HeadGroupSpec: rayv1.HeadGroupSpec{
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  "ray-head",
+								Image: "rayproject/ray:latest",
+								Env: []corev1.EnvVar{
+									{Name: "RAY_USE_TLS", Value: "1"},
+									{Name: "RAY_TLS_SERVER_CERT", Value: "/etc/tls/server.crt"},
+									{Name: "RAY_TLS_SERVER_KEY", Value: "/etc/tls/server.key"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Test building head NetworkPolicy with mTLS enabled
+	policy := testNetworkPolicyController.buildHeadNetworkPolicy(rayClusterWithMTLS, []string{"ray-system"})
+
+	// Verify Rule 5: Secured ports should include both 8443 and 10001 when mTLS is enabled
+	securedRule := policy.Spec.Ingress[4]
+	assert.Empty(t, securedRule.From, "Secured ports rule should have NO from (allows all)")
+	assert.Len(t, securedRule.Ports, 2, "Secured ports rule should have 2 ports when mTLS enabled (8443, 10001)")
+
+	// Check for both mTLS ports
+	portFound8443 := false
+	portFound10001 := false
+	for _, port := range securedRule.Ports {
+		switch port.Port.IntVal {
+		case 8443:
+			portFound8443 = true
+		case 10001:
+			portFound10001 = true
+		}
+	}
+	assert.True(t, portFound8443, "Should include mTLS port 8443")
+	assert.True(t, portFound10001, "Should include client port 10001 when mTLS enabled")
+}
+
+func TestBuildHeadNetworkPolicy_WithoutMTLS(t *testing.T) {
+	setupNetworkPolicyTest(t)
+
+	// Use basic cluster without mTLS configuration
+	policy := testNetworkPolicyController.buildHeadNetworkPolicy(testRayClusterBasic, []string{"ray-system"})
+
+	// Verify Rule 5: Secured ports should only include 8443 when mTLS is disabled
+	securedRule := policy.Spec.Ingress[4]
+	assert.Empty(t, securedRule.From, "Secured ports rule should have NO from (allows all)")
+	assert.Len(t, securedRule.Ports, 1, "Secured ports rule should have 1 port when mTLS disabled (8443 only)")
+
+	// Check for only mTLS port
+	assert.Equal(t, int32(8443), securedRule.Ports[0].Port.IntVal, "Should only include mTLS port 8443")
 }
 
 func TestBuildWorkerNetworkPolicy_BasicCluster(t *testing.T) {

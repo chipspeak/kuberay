@@ -27,7 +27,7 @@ spec:
       - command:
         - /manager
         args:
-        - --feature-gates=RayClusterStatusConditions=true # this argument can be removed for version >= v1.3 where the feature gate is enabled by default.
+        - --feature-gates=RayClusterStatusConditions=true,RayClusterNetworkPolicy=true # this argument can be removed for version >= v1.3 where the feature gate is enabled by default.
 #        - --enable-leader-election
         image: kuberay/operator
         imagePullPolicy: IfNotPresent
@@ -61,7 +61,7 @@ spec:
           requests:
             cpu: 100m
             memory: 512Mi
-        # env:
+        env:
           # If not set or set to true, kuberay auto injects an init container waiting for ray GCS.
           # If false, you will need to inject your own init container to ensure ray GCS is up before the ray workers start.
           # Warning: we highly recommend setting to true and let kuberay handle for you.
@@ -77,8 +77,8 @@ spec:
           # - name: RAYCLUSTER_DEFAULT_REQUEUE_SECONDS_ENV
           #   value: "300"
           # Required for NetworkPolicy feature when operator is NOT deployed in 'ray-system' namespace
-          # - name: POD_NAMESPACE
-          #   valueFrom:
-          #     fieldRef:
-          #       fieldPath: metadata.namespace
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
       terminationGracePeriodSeconds: 10
