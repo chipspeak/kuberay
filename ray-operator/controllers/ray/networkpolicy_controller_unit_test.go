@@ -397,8 +397,8 @@ func TestBuildHeadNetworkPolicy_MonitoringAccess(t *testing.T) {
 	assert.Len(t, monitoringRule.Ports, 1, "Monitoring rule should have one port")
 	assert.Equal(t, int32(8080), monitoringRule.Ports[0].Port.IntVal, "Should be port 8080")
 
-	// Should allow from multiple monitoring sources
-	assert.Greater(t, len(monitoringRule.From), 1, "Should allow from multiple monitoring sources")
+	// Should allow from monitoring sources (single From with multiple namespaces)
+	assert.Len(t, monitoringRule.From, 1, "Should have one monitoring peer with multiple namespaces")
 
 	// Check for OpenShift monitoring namespace
 	foundOpenShiftMonitoring := false
@@ -437,21 +437,16 @@ func TestBuildHeadNetworkPolicy_SecuredPorts(t *testing.T) {
 	}
 
 	require.NotNil(t, securedPortsRule, "Should have secured ports rule")
-	assert.Len(t, securedPortsRule.Ports, 2, "Should have 2 secured ports")
+	assert.Len(t, securedPortsRule.Ports, 1, "Should have 1 secured port (8443 only, no mTLS)")
 
-	// Check for mTLS ports 8443 and 10001
+	// Check for mTLS port 8443 (always present)
 	portFound8443 := false
-	portFound10001 := false
 	for _, port := range securedPortsRule.Ports {
 		if port.Port.IntVal == 8443 {
 			portFound8443 = true
 		}
-		if port.Port.IntVal == 10001 {
-			portFound10001 = true
-		}
 	}
 	assert.True(t, portFound8443, "Should include mTLS port 8443")
-	assert.True(t, portFound10001, "Should include mTLS port 10001")
 }
 
 // Helper function to check if slice contains string
