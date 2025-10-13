@@ -62,6 +62,14 @@ func (r *NetworkPolicyController) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
+	// Check if NetworkPolicy is enabled via annotation
+	if !r.isNetworkPolicyEnabled(instance) {
+		logger.V(1).Info("NetworkPolicy not enabled for RayCluster", "cluster", instance.Name,
+			"annotation", utils.EnableNetworkPolicyAnnotationKey)
+		// If NetworkPolicies exist but annotation is removed, clean them up
+		return r.cleanupNetworkPoliciesIfNeeded(ctx, instance)
+	}
+
 	logger.Info("Reconciling NetworkPolicies for RayCluster", "cluster", instance.Name)
 
 	// Get KubeRay operator namespaces
@@ -386,4 +394,67 @@ func (r *NetworkPolicyController) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&networkingv1.NetworkPolicy{}).
 		Named("networkpolicy").
 		Complete(r)
+}
+
+// isNetworkPolicyEnabled checks if NetworkPolicy is enabled for this RayCluster via annotation
+func (r *NetworkPolicyController) isNetworkPolicyEnabled(instance *rayv1.RayCluster) bool {
+	if instance.Annotations == nil {
+		return false
+	}
+
+	value, exists := instance.Annotations[utils.EnableNetworkPolicyAnnotationKey]
+	if !exists {
+		return false
+	}
+
+	// Accept "true", "1", "yes", "on" as truthy values (case-insensitive)
+	switch value {
+	case "true", "1", "yes", "on", "True", "TRUE", "Yes", "YES", "On", "ON":
+		return true
+	default:
+		return false
+	}
+}
+
+// cleanupNetworkPoliciesIfNeeded removes NetworkPolicies if they exist but annotation is disabled
+func (r *NetworkPolicyController) cleanupNetworkPoliciesIfNeeded(ctx context.Context, instance *rayv1.RayCluster) (ctrl.Result, error) {
+	logger := ctrl.LoggerFrom(ctx).WithName("networkpolicy-controller")
+
+	// Try to delete head NetworkPolicy if it exists
+	headNetworkPolicy := &networkingv1.NetworkPolicy{}
+	headName := fmt.Sprintf("%s-head", instance.Name)
+	headKey := client.ObjectKey{Namespace: instance.Namespace, Name: headName}
+
+	if err := r.Get(ctx, headKey, headNetworkPolicy); err == nil {
+		// NetworkPolicy exists, delete it
+		if err := r.Delete(ctx, headNetworkPolicy); err != nil {
+			logger.Error(err, "Failed to delete head NetworkPolicy", "name", headName)
+			return ctrl.Result{}, err
+		}
+		logger.Info("Deleted head NetworkPolicy", "name", headName)
+		r.Recorder.Eventf(instance, corev1.EventTypeNormal, string(utils.DeletedNetworkPolicy),
+			"Deleted NetworkPolicy %s/%s", instance.Namespace, headName)
+	} else if !errors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+
+	// Try to delete worker NetworkPolicy if it exists
+	workerNetworkPolicy := &networkingv1.NetworkPolicy{}
+	workerName := fmt.Sprintf("%s-workers", instance.Name)
+	workerKey := client.ObjectKey{Namespace: instance.Namespace, Name: workerName}
+
+	if err := r.Get(ctx, workerKey, workerNetworkPolicy); err == nil {
+		// NetworkPolicy exists, delete it
+		if err := r.Delete(ctx, workerNetworkPolicy); err != nil {
+			logger.Error(err, "Failed to delete worker NetworkPolicy", "name", workerName)
+			return ctrl.Result{}, err
+		}
+		logger.Info("Deleted worker NetworkPolicy", "name", workerName)
+		r.Recorder.Eventf(instance, corev1.EventTypeNormal, string(utils.DeletedNetworkPolicy),
+			"Deleted NetworkPolicy %s/%s", instance.Namespace, workerName)
+	} else if !errors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
 }

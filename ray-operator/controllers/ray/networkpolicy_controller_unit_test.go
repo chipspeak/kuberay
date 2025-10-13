@@ -39,6 +39,9 @@ func setupNetworkPolicyTest(_ *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-cluster",
 			Namespace: "default",
+			Annotations: map[string]string{
+				utils.EnableNetworkPolicyAnnotationKey: "true",
+			},
 		},
 		Spec: rayv1.RayClusterSpec{
 			HeadGroupSpec: rayv1.HeadGroupSpec{
@@ -61,6 +64,9 @@ func setupNetworkPolicyTest(_ *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-cluster-rayjob",
 			Namespace: "default",
+			Annotations: map[string]string{
+				utils.EnableNetworkPolicyAnnotationKey: "true",
+			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: "ray.io/v1",
@@ -605,4 +611,69 @@ func TestBuildHeadNetworkPolicy_LongClusterName(t *testing.T) {
 		},
 	}
 	assert.Equal(t, expectedPodSelector, headPolicy.Spec.PodSelector)
+}
+
+func TestIsNetworkPolicyEnabled_AnnotationPresent(t *testing.T) {
+	setupNetworkPolicyTest(t)
+
+	// Test with annotation present and true
+	rayCluster := testRayClusterBasic.DeepCopy()
+	rayCluster.Annotations = map[string]string{
+		utils.EnableNetworkPolicyAnnotationKey: "true",
+	}
+
+	enabled := testNetworkPolicyController.isNetworkPolicyEnabled(rayCluster)
+	assert.True(t, enabled, "Should be enabled when annotation is 'true'")
+}
+
+func TestIsNetworkPolicyEnabled_AnnotationVariations(t *testing.T) {
+	setupNetworkPolicyTest(t)
+
+	testCases := []struct {
+		name     string
+		value    string
+		expected bool
+	}{
+		{"true lowercase", "true", true},
+		{"True capitalized", "True", true},
+		{"TRUE uppercase", "TRUE", true},
+		{"1 numeric", "1", true},
+		{"yes lowercase", "yes", true},
+		{"YES uppercase", "YES", true},
+		{"on lowercase", "on", true},
+		{"ON uppercase", "ON", true},
+		{"false", "false", false},
+		{"0", "0", false},
+		{"no", "no", false},
+		{"random", "random", false},
+		{"empty", "", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			rayCluster := testRayClusterBasic.DeepCopy()
+			rayCluster.Annotations = map[string]string{
+				utils.EnableNetworkPolicyAnnotationKey: tc.value,
+			}
+
+			enabled := testNetworkPolicyController.isNetworkPolicyEnabled(rayCluster)
+			assert.Equal(t, tc.expected, enabled, "Value '%s' should return %v", tc.value, tc.expected)
+		})
+	}
+}
+
+func TestIsNetworkPolicyEnabled_NoAnnotation(t *testing.T) {
+	setupNetworkPolicyTest(t)
+
+	// Test with no annotations
+	rayCluster := testRayClusterBasic.DeepCopy()
+	rayCluster.Annotations = nil
+
+	enabled := testNetworkPolicyController.isNetworkPolicyEnabled(rayCluster)
+	assert.False(t, enabled, "Should be disabled when no annotations")
+
+	// Test with empty annotations map
+	rayCluster.Annotations = map[string]string{}
+	enabled = testNetworkPolicyController.isNetworkPolicyEnabled(rayCluster)
+	assert.False(t, enabled, "Should be disabled when annotation key not present")
 }

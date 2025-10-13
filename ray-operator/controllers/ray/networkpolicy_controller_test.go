@@ -38,6 +38,9 @@ func rayClusterTemplateForNetworkPolicy(name string, namespace string) *rayv1.Ra
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
+			Annotations: map[string]string{
+				utils.EnableNetworkPolicyAnnotationKey: "true",
+			},
 		},
 		Spec: rayv1.RayClusterSpec{
 			RayVersion: support.GetRayVersion(),
@@ -417,6 +420,166 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 					return err != nil && client.IgnoreNotFound(err) == nil
 				},
 				time.Second*10, time.Millisecond*500).Should(BeTrue(), "RayCluster should be deleted")
+		})
+	})
+
+	Describe("Annotation-Based Activation", Ordered, func() {
+		ctx := context.Background()
+		namespace := "default"
+
+		It("Should NOT create NetworkPolicies when annotation is missing", func() {
+			rayCluster := rayClusterTemplateForNetworkPolicy("raycluster-no-annotation", namespace)
+			// Remove the annotation
+			rayCluster.Annotations = nil
+
+			err := k8sClient.Create(ctx, rayCluster)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create RayCluster")
+
+			// Wait a bit to ensure controller has time to reconcile
+			time.Sleep(time.Second * 3)
+
+			// Verify NetworkPolicies are NOT created
+			headNetworkPolicy := &networkingv1.NetworkPolicy{}
+			headName := rayCluster.Name + "-head"
+			headKey := client.ObjectKey{Namespace: namespace, Name: headName}
+
+			err = k8sClient.Get(ctx, headKey, headNetworkPolicy)
+			Expect(err).To(HaveOccurred(), "Head NetworkPolicy should NOT exist")
+			Expect(client.IgnoreNotFound(err)).To(Succeed(), "Error should be NotFound")
+
+			workerNetworkPolicy := &networkingv1.NetworkPolicy{}
+			workerName := rayCluster.Name + "-workers"
+			workerKey := client.ObjectKey{Namespace: namespace, Name: workerName}
+
+			err = k8sClient.Get(ctx, workerKey, workerNetworkPolicy)
+			Expect(err).To(HaveOccurred(), "Worker NetworkPolicy should NOT exist")
+			Expect(client.IgnoreNotFound(err)).To(Succeed(), "Error should be NotFound")
+
+			// Cleanup
+			err = k8sClient.Delete(ctx, rayCluster)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete RayCluster")
+		})
+
+		It("Should NOT create NetworkPolicies when annotation is false", func() {
+			rayCluster := rayClusterTemplateForNetworkPolicy("raycluster-annotation-false", namespace)
+			// Set annotation to false
+			rayCluster.Annotations[utils.EnableNetworkPolicyAnnotationKey] = "false"
+
+			err := k8sClient.Create(ctx, rayCluster)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create RayCluster")
+
+			// Wait a bit to ensure controller has time to reconcile
+			time.Sleep(time.Second * 3)
+
+			// Verify NetworkPolicies are NOT created
+			headNetworkPolicy := &networkingv1.NetworkPolicy{}
+			headName := rayCluster.Name + "-head"
+			headKey := client.ObjectKey{Namespace: namespace, Name: headName}
+
+			err = k8sClient.Get(ctx, headKey, headNetworkPolicy)
+			Expect(err).To(HaveOccurred(), "Head NetworkPolicy should NOT exist when annotation is false")
+			Expect(client.IgnoreNotFound(err)).To(Succeed(), "Error should be NotFound")
+
+			// Cleanup
+			err = k8sClient.Delete(ctx, rayCluster)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete RayCluster")
+		})
+
+		It("Should create NetworkPolicies when annotation changes from false to true", func() {
+			rayCluster := rayClusterTemplateForNetworkPolicy("raycluster-annotation-toggle", namespace)
+			// Start with annotation false
+			rayCluster.Annotations[utils.EnableNetworkPolicyAnnotationKey] = "false"
+
+			err := k8sClient.Create(ctx, rayCluster)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create RayCluster")
+
+			// Wait and verify no NetworkPolicies created
+			time.Sleep(time.Second * 2)
+
+			headNetworkPolicy := &networkingv1.NetworkPolicy{}
+			headName := rayCluster.Name + "-head"
+			headKey := client.ObjectKey{Namespace: namespace, Name: headName}
+
+			err = k8sClient.Get(ctx, headKey, headNetworkPolicy)
+			Expect(err).To(HaveOccurred(), "Head NetworkPolicy should NOT exist initially")
+
+			// Now update annotation to true
+			err = k8sClient.Get(ctx, client.ObjectKey{Name: rayCluster.Name, Namespace: namespace}, rayCluster)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get RayCluster")
+
+			rayCluster.Annotations[utils.EnableNetworkPolicyAnnotationKey] = "true"
+			err = k8sClient.Update(ctx, rayCluster)
+			Expect(err).NotTo(HaveOccurred(), "Failed to update RayCluster annotation")
+
+			// Now NetworkPolicies should be created
+			Eventually(
+				getResourceFunc(ctx, headKey, headNetworkPolicy),
+				time.Second*10, time.Millisecond*500).Should(Succeed(), "Head NetworkPolicy should be created after annotation update")
+
+			workerNetworkPolicy := &networkingv1.NetworkPolicy{}
+			workerName := rayCluster.Name + "-workers"
+			workerKey := client.ObjectKey{Namespace: namespace, Name: workerName}
+
+			Eventually(
+				getResourceFunc(ctx, workerKey, workerNetworkPolicy),
+				time.Second*10, time.Millisecond*500).Should(Succeed(), "Worker NetworkPolicy should be created after annotation update")
+
+			// Cleanup
+			err = k8sClient.Delete(ctx, rayCluster)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete RayCluster")
+		})
+
+		It("Should delete NetworkPolicies when annotation changes from true to false", func() {
+			rayCluster := rayClusterTemplateForNetworkPolicy("raycluster-annotation-removal", namespace)
+			// Start with annotation true
+			rayCluster.Annotations[utils.EnableNetworkPolicyAnnotationKey] = "true"
+
+			err := k8sClient.Create(ctx, rayCluster)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create RayCluster")
+
+			// Wait for NetworkPolicies to be created
+			headNetworkPolicy := &networkingv1.NetworkPolicy{}
+			headName := rayCluster.Name + "-head"
+			headKey := client.ObjectKey{Namespace: namespace, Name: headName}
+
+			Eventually(
+				getResourceFunc(ctx, headKey, headNetworkPolicy),
+				time.Second*10, time.Millisecond*500).Should(Succeed(), "Head NetworkPolicy should be created")
+
+			workerNetworkPolicy := &networkingv1.NetworkPolicy{}
+			workerName := rayCluster.Name + "-workers"
+			workerKey := client.ObjectKey{Namespace: namespace, Name: workerName}
+
+			Eventually(
+				getResourceFunc(ctx, workerKey, workerNetworkPolicy),
+				time.Second*10, time.Millisecond*500).Should(Succeed(), "Worker NetworkPolicy should be created")
+
+			// Now update annotation to false
+			err = k8sClient.Get(ctx, client.ObjectKey{Name: rayCluster.Name, Namespace: namespace}, rayCluster)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get RayCluster")
+
+			rayCluster.Annotations[utils.EnableNetworkPolicyAnnotationKey] = "false"
+			err = k8sClient.Update(ctx, rayCluster)
+			Expect(err).NotTo(HaveOccurred(), "Failed to update RayCluster annotation")
+
+			// NetworkPolicies should be deleted
+			Eventually(
+				func() bool {
+					err := k8sClient.Get(ctx, headKey, headNetworkPolicy)
+					return err != nil && client.IgnoreNotFound(err) == nil
+				},
+				time.Second*10, time.Millisecond*500).Should(BeTrue(), "Head NetworkPolicy should be deleted after annotation update")
+
+			Eventually(
+				func() bool {
+					err := k8sClient.Get(ctx, workerKey, workerNetworkPolicy)
+					return err != nil && client.IgnoreNotFound(err) == nil
+				},
+				time.Second*10, time.Millisecond*500).Should(BeTrue(), "Worker NetworkPolicy should be deleted after annotation update")
+
+			// Cleanup
+			err = k8sClient.Delete(ctx, rayCluster)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete RayCluster")
 		})
 	})
 })

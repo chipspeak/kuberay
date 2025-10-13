@@ -37,7 +37,6 @@ import (
 	configapi "github.com/ray-project/kuberay/ray-operator/apis/config/v1alpha1"
 	rayv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	"github.com/ray-project/kuberay/ray-operator/controllers/ray/utils"
-	"github.com/ray-project/kuberay/ray-operator/pkg/features"
 )
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
@@ -75,8 +74,8 @@ func TestAPIs(t *testing.T) {
 var _ = BeforeSuite(func(ctx SpecContext) {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
-	// Enable NetworkPolicy feature gate for integration tests
-	features.SetFeatureGateDuringTest(GinkgoTB(), features.RayClusterNetworkPolicy, true)
+	// Note: NetworkPolicy controller now uses annotation-based activation instead of feature flag
+	// features.SetFeatureGateDuringTest(GinkgoTB(), features.RayClusterNetworkPolicy, true)
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
@@ -138,12 +137,10 @@ var _ = BeforeSuite(func(ctx SpecContext) {
 	err = NewRayJobReconciler(ctx, mgr, rayJobOptions, testClientProvider).SetupWithManager(mgr, 1)
 	Expect(err).NotTo(HaveOccurred(), "failed to setup RayJob controller")
 
-	// NetworkPolicy controller (only registered if feature flag is enabled)
-	if features.Enabled(features.RayClusterNetworkPolicy) {
-		networkPolicyController := NewNetworkPolicyController(mgr)
-		err = networkPolicyController.SetupWithManager(mgr)
-		Expect(err).NotTo(HaveOccurred(), "failed to setup NetworkPolicy controller")
-	}
+	// NetworkPolicy controller (always registered, uses annotation-based activation)
+	networkPolicyController := NewNetworkPolicyController(mgr)
+	err = networkPolicyController.SetupWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred(), "failed to setup NetworkPolicy controller")
 
 	go func() {
 		err = mgr.Start(ctrl.SetupSignalHandler())
