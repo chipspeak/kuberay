@@ -4,7 +4,7 @@ metadata:
   name: raycluster-kuberay
   annotations:
     # Enable NetworkPolicy creation for this RayCluster
-    ray.io/enable-network-policy: "true"
+    odh.ray.io/secure-trusted-network: "true"
 spec:
   rayVersion: '2.9.0'
   # Head group specification
