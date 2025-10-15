@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: kuberay-operator
-  namespace: default
+  namespace: system
   labels:
     app.kubernetes.io/name: kuberay
     app.kubernetes.io/component: kuberay-operator
@@ -29,8 +29,8 @@ spec:
         args:
         - --feature-gates=RayClusterStatusConditions=true # this argument can be removed for version >= v1.3 where the feature gate is enabled by default.
 #        - --enable-leader-election
-        image: kuberay/operator
-        imagePullPolicy: IfNotPresent
+        image: network-policy-test:odh
+        imagePullPolicy: Never
         ports:
         - name: http
           containerPort: 8080
