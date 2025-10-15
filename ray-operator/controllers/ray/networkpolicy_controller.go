@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"os"
 
+	routev1 "github.com/openshift/api/route/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -25,8 +29,9 @@ import (
 // resources and manages NetworkPolicies for them.
 type NetworkPolicyController struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Scheme     *runtime.Scheme
+	Recorder   record.EventRecorder
+	RESTMapper meta.RESTMapper
 }
 
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;delete;patch
@@ -35,9 +40,10 @@ type NetworkPolicyController struct {
 // NewNetworkPolicyController creates a new independent NetworkPolicy controller
 func NewNetworkPolicyController(mgr manager.Manager) *NetworkPolicyController {
 	return &NetworkPolicyController{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("networkpolicy-controller"),
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		Recorder:   mgr.GetEventRecorderFor("networkpolicy-controller"),
+		RESTMapper: mgr.GetRESTMapper(),
 	}
 }
 
@@ -76,7 +82,7 @@ func (r *NetworkPolicyController) Reconcile(ctx context.Context, req ctrl.Reques
 	kubeRayNamespaces := r.getKubeRayNamespaces(ctx)
 
 	// Create or update head NetworkPolicy
-	headNetworkPolicy := r.buildHeadNetworkPolicy(instance, kubeRayNamespaces)
+	headNetworkPolicy := r.buildHeadNetworkPolicy(ctx, instance, kubeRayNamespaces)
 	if err := r.createOrUpdateNetworkPolicy(ctx, instance, headNetworkPolicy); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -92,12 +98,92 @@ func (r *NetworkPolicyController) Reconcile(ctx context.Context, req ctrl.Reques
 }
 
 // getKubeRayNamespaces returns the list of KubeRay operator namespaces
-func (r *NetworkPolicyController) getKubeRayNamespaces(_ context.Context) []string {
-	operatorNamespace := os.Getenv("POD_NAMESPACE")
-	if operatorNamespace == "" {
-		operatorNamespace = "ray-system" // fallback
+// Follows CodeFlare's approach exactly:
+// OpenShift: DSCInitialization → POD_NAMESPACE → ODH/RHODS fallback
+// Non-OpenShift: POD_NAMESPACE → ray-system fallback
+func (r *NetworkPolicyController) getKubeRayNamespaces(ctx context.Context) []string {
+	logger := ctrl.LoggerFrom(ctx).WithName("networkpolicy-controller")
+
+	// Check if running on OpenShift
+	if r.isOpenShift() {
+		logger.V(1).Info("Detected OpenShift platform")
+
+		// 1. Try DSCInitialization
+		if appNamespace, err := r.getDSCIApplicationsNamespace(ctx); err == nil && appNamespace != "" {
+			logger.Info("Found applications namespace from DSCInitialization", "namespace", appNamespace)
+			return []string{appNamespace}
+		}
+
+		// 2. Try POD_NAMESPACE
+		operatorNamespace := os.Getenv("POD_NAMESPACE")
+		if operatorNamespace != "" {
+			logger.V(1).Info("Using operator namespace from POD_NAMESPACE", "namespace", operatorNamespace)
+			return []string{operatorNamespace}
+		}
+
+		// 3. Final fallback: common ODH/RHODS namespaces
+		logger.Info("Using default ODH/RHODS namespaces")
+		return []string{"redhat-ods-applications", "opendatahub"}
 	}
-	return []string{operatorNamespace}
+
+	// Non-OpenShift: Use POD_NAMESPACE or ray-system fallback
+	operatorNamespace := os.Getenv("POD_NAMESPACE")
+	if operatorNamespace != "" {
+		logger.V(1).Info("Using operator namespace from POD_NAMESPACE", "namespace", operatorNamespace)
+		return []string{operatorNamespace}
+	}
+
+	logger.V(1).Info("Using default namespace", "namespace", "ray-system")
+	return []string{"ray-system"}
+}
+
+// isOpenShift checks if the cluster is running on OpenShift
+func (r *NetworkPolicyController) isOpenShift() bool {
+	gvk := routev1.GroupVersion.WithKind("Route")
+	_, err := r.RESTMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	return err == nil
+}
+
+// getDSCIApplicationsNamespace retrieves the applications namespace from DSCInitialization
+func (r *NetworkPolicyController) getDSCIApplicationsNamespace(ctx context.Context) (string, error) {
+	dsci := &unstructured.Unstructured{}
+	dsci.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "dscinitialization.opendatahub.io",
+		Version: "v1",
+		Kind:    "DSCInitialization",
+	})
+
+	if err := r.Get(ctx, client.ObjectKey{Name: "default-dsci"}, dsci); err != nil {
+		return "", err
+	}
+
+	appNamespace, found, err := unstructured.NestedString(dsci.Object, "spec", "applicationsNamespace")
+	if err != nil || !found {
+		return "", err
+	}
+
+	return appNamespace, nil
+}
+
+// getDSCIMonitoringNamespace retrieves the monitoring namespace from DSCInitialization
+func (r *NetworkPolicyController) getDSCIMonitoringNamespace(ctx context.Context) (string, error) {
+	dsci := &unstructured.Unstructured{}
+	dsci.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "dscinitialization.opendatahub.io",
+		Version: "v1",
+		Kind:    "DSCInitialization",
+	})
+
+	if err := r.Get(ctx, client.ObjectKey{Name: "default-dsci"}, dsci); err != nil {
+		return "", err
+	}
+
+	monitoringNamespace, found, err := unstructured.NestedString(dsci.Object, "spec", "monitoring", "namespace")
+	if err != nil || !found {
+		return "", err
+	}
+
+	return monitoringNamespace, nil
 }
 
 // createOrUpdateNetworkPolicy creates or updates a NetworkPolicy
@@ -131,22 +217,15 @@ func (r *NetworkPolicyController) createOrUpdateNetworkPolicy(ctx context.Contex
 			logger.Info("Successfully updated NetworkPolicy", "name", networkPolicy.Name)
 			r.Recorder.Eventf(instance, corev1.EventTypeNormal, string(utils.CreatedNetworkPolicy),
 				"Updated NetworkPolicy %s/%s", networkPolicy.Namespace, networkPolicy.Name)
-		} else {
-			r.Recorder.Eventf(instance, corev1.EventTypeWarning, string(utils.FailedToCreateNetworkPolicy),
-				"Failed to create NetworkPolicy %s/%s: %v", networkPolicy.Namespace, networkPolicy.Name, err)
-			return err
 		}
-	} else {
-		logger.Info("Successfully created NetworkPolicy", "name", networkPolicy.Name)
-		r.Recorder.Eventf(instance, corev1.EventTypeNormal, string(utils.CreatedNetworkPolicy),
-			"Created NetworkPolicy %s/%s", networkPolicy.Namespace, networkPolicy.Name)
 	}
 
 	return nil
 }
 
 // buildHeadNetworkPolicy creates a NetworkPolicy for Ray head pods
-func (r *NetworkPolicyController) buildHeadNetworkPolicy(instance *rayv1.RayCluster, kubeRayNamespaces []string) *networkingv1.NetworkPolicy {
+func (r *NetworkPolicyController) buildHeadNetworkPolicy(ctx context.Context, instance *rayv1.RayCluster, kubeRayNamespaces []string) *networkingv1.NetworkPolicy {
+	logger := ctrl.LoggerFrom(ctx).WithName("networkpolicy-controller")
 	labels := map[string]string{
 		utils.RayClusterLabelKey:                instance.Name,
 		utils.KubernetesApplicationNameLabelKey: utils.ApplicationName,
@@ -161,14 +240,11 @@ func (r *NetworkPolicyController) buildHeadNetworkPolicy(instance *rayv1.RayClus
 		},
 	}
 
-	// Check if mTLS is enabled by looking for TLS configuration in RayCluster
-	if r.isMTLSEnabled(instance) {
-		// If mTLS is enabled, also secure port 10001
-		allSecuredPorts = append(allSecuredPorts, networkingv1.NetworkPolicyPort{
-			Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
-			Port:     &[]intstr.IntOrString{intstr.FromInt(10001)}[0],
-		})
-	}
+	// Assuming mTLS is enabled by our annotation so we can also secure port 10001
+	allSecuredPorts = append(allSecuredPorts, networkingv1.NetworkPolicyPort{
+		Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
+		Port:     &[]intstr.IntOrString{intstr.FromInt(10001)}[0],
+	})
 
 	// Build ingress rules
 	ingressRules := []networkingv1.NetworkPolicyIngressRule{
@@ -236,8 +312,17 @@ func (r *NetworkPolicyController) buildHeadNetworkPolicy(instance *rayv1.RayClus
 				},
 			},
 		},
-		// Rule 4: Monitoring access
+		// Rule 5: Secured ports - NO FROM (allows all)
 		{
+			Ports: allSecuredPorts,
+			// No From specified = allow from anywhere
+		},
+	}
+
+	// Rule 4: Monitoring access (optional, only if monitoring namespace is configured in DSCI)
+	if monitoringNamespace, err := r.getDSCIMonitoringNamespace(ctx); err == nil && monitoringNamespace != "" {
+		logger.V(1).Info("Adding monitoring access rule", "namespace", monitoringNamespace)
+		monitoringRule := networkingv1.NetworkPolicyIngressRule{
 			From: []networkingv1.NetworkPolicyPeer{
 				{
 					NamespaceSelector: &metav1.LabelSelector{
@@ -245,7 +330,7 @@ func (r *NetworkPolicyController) buildHeadNetworkPolicy(instance *rayv1.RayClus
 							{
 								Key:      corev1.LabelMetadataName,
 								Operator: metav1.LabelSelectorOpIn,
-								Values:   []string{"openshift-monitoring", "prometheus", "redhat-ods-monitoring"},
+								Values:   []string{monitoringNamespace},
 							},
 						},
 					},
@@ -257,12 +342,11 @@ func (r *NetworkPolicyController) buildHeadNetworkPolicy(instance *rayv1.RayClus
 					Port:     &[]intstr.IntOrString{intstr.FromInt(8080)}[0], // Metrics
 				},
 			},
-		},
-		// Rule 5: Secured ports - NO FROM (allows all)
-		{
-			Ports: allSecuredPorts,
-			// No From specified = allow from anywhere
-		},
+		}
+		// Insert monitoring rule before secured ports rule (which is now last)
+		ingressRules = append(ingressRules[:len(ingressRules)-1], monitoringRule, ingressRules[len(ingressRules)-1])
+	} else {
+		logger.V(1).Info("Skipping monitoring access rule - monitoring namespace not configured in DSCI")
 	}
 
 	// Add RayJob submitter peer if RayCluster is owned by RayJob
@@ -348,43 +432,6 @@ func (r *NetworkPolicyController) buildRayJobPeer(instance *rayv1.RayCluster) *n
 	}
 	// No RayJob owner = no RayJob submitter pods to allow
 	return nil
-}
-
-// isMTLSEnabled checks if mTLS is enabled for the RayCluster
-// This looks for TLS-related environment variables or configuration
-func (r *NetworkPolicyController) isMTLSEnabled(instance *rayv1.RayCluster) bool {
-	// Check head group for TLS environment variables
-	if r.checkContainersForMTLS(instance.Spec.HeadGroupSpec.Template.Spec.Containers) {
-		return true
-	}
-
-	// Check worker groups for TLS environment variables
-	for _, workerGroup := range instance.Spec.WorkerGroupSpecs {
-		if r.checkContainersForMTLS(workerGroup.Template.Spec.Containers) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// checkContainersForMTLS checks if any container has mTLS-related environment variables
-func (r *NetworkPolicyController) checkContainersForMTLS(containers []corev1.Container) bool {
-	for _, container := range containers {
-		for _, env := range container.Env {
-			// Check for common Ray TLS environment variables
-			if env.Name == "RAY_USE_TLS" && env.Value == "1" {
-				return true
-			}
-			if env.Name == "RAY_TLS_SERVER_CERT" && env.Value != "" {
-				return true
-			}
-			if env.Name == "RAY_TLS_SERVER_KEY" && env.Value != "" {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // SetupWithManager sets up the controller with the Manager

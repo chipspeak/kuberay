@@ -154,9 +154,9 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 			}
 			Expect(headNetworkPolicy.Spec.PodSelector).To(Equal(expectedPodSelector))
 
-			// Verify ingress rules - CodeFlare 5-rule pattern
-			Expect(len(headNetworkPolicy.Spec.Ingress)).To(BeNumerically(">=", 5), "Should have at least 5 ingress rules")
-			Expect(len(headNetworkPolicy.Spec.Ingress)).To(BeNumerically("<=", 6), "Should have at most 6 ingress rules (including optional RayJob)")
+			// Verify ingress rules - without monitoring configured, should have 4 rules
+			// (intra-cluster, external, operator, secured ports)
+			Expect(headNetworkPolicy.Spec.Ingress).To(HaveLen(4), "Should have 4 ingress rules when monitoring not configured")
 
 			// Verify Rule 1: Intra-cluster communication - NO PORTS (allows all)
 			intraClusterRule := headNetworkPolicy.Spec.Ingress[0]
@@ -183,19 +183,25 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 			}
 			Expect(externalRule.From[0]).To(Equal(expectedAnyPodPeer))
 
-			// Verify Rule 5: Secured ports - NO FROM (allows all)
-			securedRule := headNetworkPolicy.Spec.Ingress[4]
+			// Verify Rule 4: Secured ports - NO FROM (allows all)
+			// Note: This is now the last rule (index 3) since monitoring is not configured
+			securedRule := headNetworkPolicy.Spec.Ingress[3]
 			Expect(securedRule.From).To(BeEmpty(), "Secured ports rule should have NO from (allows all)")
-			Expect(securedRule.Ports).ToNot(BeEmpty(), "Secured ports rule should have at least 1 port (8443)")
+			Expect(securedRule.Ports).To(HaveLen(2), "Secured ports rule should have 2 ports (8443, 10001)")
 
-			// Check for mTLS port 8443 (always present)
+			// Check for mTLS ports (8443 and 10001, always present)
 			portFound8443 := false
+			portFound10001 := false
 			for _, port := range securedRule.Ports {
-				if port.Port.IntVal == 8443 {
+				switch port.Port.IntVal {
+				case 8443:
 					portFound8443 = true
+				case 10001:
+					portFound10001 = true
 				}
 			}
 			Expect(portFound8443).To(BeTrue(), "Should include mTLS port 8443")
+			Expect(portFound10001).To(BeTrue(), "Should include secured port 10001")
 		})
 
 		It("Verify Worker NetworkPolicy has correct structure", func() {
