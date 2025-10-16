@@ -9,7 +9,7 @@ webhooks:
   clientConfig:
     service:
       name: kuberay-webhook-service
-      namespace: redhat-ods-applications
+      namespace: system
       path: /mutate-ray-io-v1-raycluster
   failurePolicy: Fail
   name: mraycluster.kb.io
@@ -35,7 +35,7 @@ webhooks:
   clientConfig:
     service:
       name: kuberay-webhook-service
-      namespace: redhat-ods-applications
+      namespace: system
       path: /validate-ray-io-v1-raycluster
   failurePolicy: Fail
   name: vraycluster.kb.io

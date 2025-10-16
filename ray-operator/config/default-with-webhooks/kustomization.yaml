@@ -83,7 +83,7 @@ replacements:
 - source:
     fieldPath: .metadata.name
     kind: Service
-    name: kuberay-webhook-service
+    name: webhook-service
     version: v1
   targets:
   - fieldPaths:
@@ -99,7 +99,7 @@ replacements:
 - source:
     fieldPath: .metadata.namespace
     kind: Service
-    name: kuberay-webhook-service
+    name: webhook-service
     version: v1
   targets:
   - fieldPaths:
