@@ -74,9 +74,6 @@ func TestAPIs(t *testing.T) {
 var _ = BeforeSuite(func(ctx SpecContext) {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
-	// Note: NetworkPolicy controller now uses annotation-based activation instead of feature flag
-	// features.SetFeatureGateDuringTest(GinkgoTB(), features.RayClusterNetworkPolicy, true)
-
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
@@ -137,7 +134,7 @@ var _ = BeforeSuite(func(ctx SpecContext) {
 	err = NewRayJobReconciler(ctx, mgr, rayJobOptions, testClientProvider).SetupWithManager(mgr, 1)
 	Expect(err).NotTo(HaveOccurred(), "failed to setup RayJob controller")
 
-	// NetworkPolicy controller (always registered, uses annotation-based activation)
+	// NetworkPolicy controller
 	networkPolicyController := NewNetworkPolicyController(mgr)
 	err = networkPolicyController.SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred(), "failed to setup NetworkPolicy controller")

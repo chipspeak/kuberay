@@ -39,7 +39,7 @@ func rayClusterTemplateForNetworkPolicy(name string, namespace string) *rayv1.Ra
 			Name:      name,
 			Namespace: namespace,
 			Annotations: map[string]string{
-				utils.EnableNetworkPolicyAnnotationKey: "true",
+				utils.EnableSecureTrustedNetworkAnnotationKey: "true",
 			},
 		},
 		Spec: rayv1.RayClusterSpec{
@@ -187,21 +187,10 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 			// Note: This is now the last rule (index 3) since monitoring is not configured
 			securedRule := headNetworkPolicy.Spec.Ingress[3]
 			Expect(securedRule.From).To(BeEmpty(), "Secured ports rule should have NO from (allows all)")
-			Expect(securedRule.Ports).To(HaveLen(2), "Secured ports rule should have 2 ports (8443, 10001)")
+			Expect(securedRule.Ports).To(HaveLen(1), "Secured ports rule should have 1 port (8443 only)")
 
-			// Check for mTLS ports (8443 and 10001, always present)
-			portFound8443 := false
-			portFound10001 := false
-			for _, port := range securedRule.Ports {
-				switch port.Port.IntVal {
-				case 8443:
-					portFound8443 = true
-				case 10001:
-					portFound10001 = true
-				}
-			}
-			Expect(portFound8443).To(BeTrue(), "Should include mTLS port 8443")
-			Expect(portFound10001).To(BeTrue(), "Should include secured port 10001")
+			// Check for mTLS port 8443 (port 10001 is NOT in this rule - it's restricted to namespace/cluster/operator)
+			Expect(securedRule.Ports[0].Port.IntVal).To(Equal(int32(8443)), "Should only include mTLS port 8443")
 		})
 
 		It("Verify Worker NetworkPolicy has correct structure", func() {
@@ -469,7 +458,7 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 		It("Should NOT create NetworkPolicies when annotation is false", func() {
 			rayCluster := rayClusterTemplateForNetworkPolicy("raycluster-annotation-false", namespace)
 			// Set annotation to false
-			rayCluster.Annotations[utils.EnableNetworkPolicyAnnotationKey] = "false"
+			rayCluster.Annotations[utils.EnableSecureTrustedNetworkAnnotationKey] = "false"
 
 			err := k8sClient.Create(ctx, rayCluster)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create RayCluster")
@@ -494,7 +483,7 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 		It("Should create NetworkPolicies when annotation changes from false to true", func() {
 			rayCluster := rayClusterTemplateForNetworkPolicy("raycluster-annotation-toggle", namespace)
 			// Start with annotation false
-			rayCluster.Annotations[utils.EnableNetworkPolicyAnnotationKey] = "false"
+			rayCluster.Annotations[utils.EnableSecureTrustedNetworkAnnotationKey] = "false"
 
 			err := k8sClient.Create(ctx, rayCluster)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create RayCluster")
@@ -513,7 +502,7 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 			err = k8sClient.Get(ctx, client.ObjectKey{Name: rayCluster.Name, Namespace: namespace}, rayCluster)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get RayCluster")
 
-			rayCluster.Annotations[utils.EnableNetworkPolicyAnnotationKey] = "true"
+			rayCluster.Annotations[utils.EnableSecureTrustedNetworkAnnotationKey] = "true"
 			err = k8sClient.Update(ctx, rayCluster)
 			Expect(err).NotTo(HaveOccurred(), "Failed to update RayCluster annotation")
 
@@ -538,7 +527,7 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 		It("Should delete NetworkPolicies when annotation changes from true to false", func() {
 			rayCluster := rayClusterTemplateForNetworkPolicy("raycluster-annotation-removal", namespace)
 			// Start with annotation true
-			rayCluster.Annotations[utils.EnableNetworkPolicyAnnotationKey] = "true"
+			rayCluster.Annotations[utils.EnableSecureTrustedNetworkAnnotationKey] = "true"
 
 			err := k8sClient.Create(ctx, rayCluster)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create RayCluster")
@@ -564,7 +553,7 @@ var _ = Context("NetworkPolicy Controller Integration Tests", func() {
 			err = k8sClient.Get(ctx, client.ObjectKey{Name: rayCluster.Name, Namespace: namespace}, rayCluster)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get RayCluster")
 
-			rayCluster.Annotations[utils.EnableNetworkPolicyAnnotationKey] = "false"
+			rayCluster.Annotations[utils.EnableSecureTrustedNetworkAnnotationKey] = "false"
 			err = k8sClient.Update(ctx, rayCluster)
 			Expect(err).NotTo(HaveOccurred(), "Failed to update RayCluster annotation")
 

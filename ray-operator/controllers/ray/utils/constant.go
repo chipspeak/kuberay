@@ -28,7 +28,7 @@ const (
 	KubeRayVersion                           = "ray.io/kuberay-version"
 
 	// NetworkPolicy annotation key - when present on a RayCluster, enables NetworkPolicy creation
-	EnableNetworkPolicyAnnotationKey = "odh.ray.io/secure-trusted-network"
+	EnableSecureTrustedNetworkAnnotationKey = "odh.ray.io/secure-trusted-network"
 
 	// In KubeRay, the Ray container must be the first application container in a head or worker Pod.
 	RayContainerIndex = 0

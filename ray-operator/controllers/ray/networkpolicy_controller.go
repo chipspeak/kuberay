@@ -11,9 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -69,9 +67,9 @@ func (r *NetworkPolicyController) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Check if NetworkPolicy is enabled via annotation
-	if !r.isNetworkPolicyEnabled(instance) {
+	if !r.isSecureTrustedNetworkEnabled(instance) {
 		logger.V(1).Info("NetworkPolicy not enabled for RayCluster", "cluster", instance.Name,
-			"annotation", utils.EnableNetworkPolicyAnnotationKey)
+			"annotation", utils.EnableSecureTrustedNetworkAnnotationKey)
 		// If NetworkPolicies exist but annotation is removed, clean them up
 		return r.cleanupNetworkPoliciesIfNeeded(ctx, instance)
 	}
@@ -98,39 +96,36 @@ func (r *NetworkPolicyController) Reconcile(ctx context.Context, req ctrl.Reques
 }
 
 // getKubeRayNamespaces returns the list of KubeRay operator namespaces
-// Follows CodeFlare's approach exactly:
-// OpenShift: DSCInitialization → POD_NAMESPACE → ODH/RHODS fallback
+// OpenShift: APPLICATION_NAMESPACE (from ODH operator) → POD_NAMESPACE → ODH/RHODS fallback
 // Non-OpenShift: POD_NAMESPACE → ray-system fallback
 func (r *NetworkPolicyController) getKubeRayNamespaces(ctx context.Context) []string {
 	logger := ctrl.LoggerFrom(ctx).WithName("networkpolicy-controller")
 
-	// Check if running on OpenShift
+	// On OpenShift, use stricter namespace detection
 	if r.isOpenShift() {
 		logger.V(1).Info("Detected OpenShift platform")
 
-		// 1. Try DSCInitialization
-		if appNamespace, err := r.getDSCIApplicationsNamespace(ctx); err == nil && appNamespace != "" {
-			logger.Info("Found applications namespace from DSCInitialization", "namespace", appNamespace)
-			return []string{appNamespace}
+		// 1. Check APPLICATION_NAMESPACE env var (set by ODH operator via params.env)
+		if appNs := os.Getenv("APPLICATION_NAMESPACE"); appNs != "" {
+			logger.V(1).Info("Using APPLICATION_NAMESPACE from environment", "namespace", appNs)
+			return []string{appNs}
 		}
 
-		// 2. Try POD_NAMESPACE
-		operatorNamespace := os.Getenv("POD_NAMESPACE")
-		if operatorNamespace != "" {
-			logger.V(1).Info("Using operator namespace from POD_NAMESPACE", "namespace", operatorNamespace)
-			return []string{operatorNamespace}
+		// 2. Fallback to POD_NAMESPACE
+		if podNs := os.Getenv("POD_NAMESPACE"); podNs != "" {
+			logger.V(1).Info("Using POD_NAMESPACE", "namespace", podNs)
+			return []string{podNs}
 		}
 
-		// 3. Final fallback: common ODH/RHODS namespaces
+		// 3. Final fallback for OpenShift
 		logger.Info("Using default ODH/RHODS namespaces")
 		return []string{"redhat-ods-applications", "opendatahub"}
 	}
 
-	// Non-OpenShift: Use POD_NAMESPACE or ray-system fallback
-	operatorNamespace := os.Getenv("POD_NAMESPACE")
-	if operatorNamespace != "" {
-		logger.V(1).Info("Using operator namespace from POD_NAMESPACE", "namespace", operatorNamespace)
-		return []string{operatorNamespace}
+	// Non-OpenShift: simpler fallback chain
+	if podNs := os.Getenv("POD_NAMESPACE"); podNs != "" {
+		logger.V(1).Info("Using POD_NAMESPACE", "namespace", podNs)
+		return []string{podNs}
 	}
 
 	logger.V(1).Info("Using default namespace", "namespace", "ray-system")
@@ -142,48 +137,6 @@ func (r *NetworkPolicyController) isOpenShift() bool {
 	gvk := routev1.GroupVersion.WithKind("Route")
 	_, err := r.RESTMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	return err == nil
-}
-
-// getDSCIApplicationsNamespace retrieves the applications namespace from DSCInitialization
-func (r *NetworkPolicyController) getDSCIApplicationsNamespace(ctx context.Context) (string, error) {
-	dsci := &unstructured.Unstructured{}
-	dsci.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "dscinitialization.opendatahub.io",
-		Version: "v1",
-		Kind:    "DSCInitialization",
-	})
-
-	if err := r.Get(ctx, client.ObjectKey{Name: "default-dsci"}, dsci); err != nil {
-		return "", err
-	}
-
-	appNamespace, found, err := unstructured.NestedString(dsci.Object, "spec", "applicationsNamespace")
-	if err != nil || !found {
-		return "", err
-	}
-
-	return appNamespace, nil
-}
-
-// getDSCIMonitoringNamespace retrieves the monitoring namespace from DSCInitialization
-func (r *NetworkPolicyController) getDSCIMonitoringNamespace(ctx context.Context) (string, error) {
-	dsci := &unstructured.Unstructured{}
-	dsci.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "dscinitialization.opendatahub.io",
-		Version: "v1",
-		Kind:    "DSCInitialization",
-	})
-
-	if err := r.Get(ctx, client.ObjectKey{Name: "default-dsci"}, dsci); err != nil {
-		return "", err
-	}
-
-	monitoringNamespace, found, err := unstructured.NestedString(dsci.Object, "spec", "monitoring", "namespace")
-	if err != nil || !found {
-		return "", err
-	}
-
-	return monitoringNamespace, nil
 }
 
 // createOrUpdateNetworkPolicy creates or updates a NetworkPolicy
@@ -201,6 +154,11 @@ func (r *NetworkPolicyController) createOrUpdateNetworkPolicy(ctx context.Contex
 			// NetworkPolicy exists, update it
 			existing := &networkingv1.NetworkPolicy{}
 			if err := r.Get(ctx, client.ObjectKeyFromObject(networkPolicy), existing); err != nil {
+				return err
+			}
+
+			// Ensure controller owner reference is set
+			if err := controllerutil.SetControllerReference(instance, existing, r.Scheme); err != nil {
 				return err
 			}
 
@@ -232,19 +190,14 @@ func (r *NetworkPolicyController) buildHeadNetworkPolicy(ctx context.Context, in
 		utils.KubernetesCreatedByLabelKey:       utils.ComponentName,
 	}
 
-	// Build secured ports - mTLS port always included
+	// Build secured ports - only mTLS port 8443 should be accessible from anywhere
+	// Port 10001 is already covered by Rules 1-3 (intra-cluster, same-namespace, operator)
 	allSecuredPorts := []networkingv1.NetworkPolicyPort{
 		{
 			Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
 			Port:     &[]intstr.IntOrString{intstr.FromInt(8443)}[0],
 		},
 	}
-
-	// Assuming mTLS is enabled by our annotation so we can also secure port 10001
-	allSecuredPorts = append(allSecuredPorts, networkingv1.NetworkPolicyPort{
-		Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
-		Port:     &[]intstr.IntOrString{intstr.FromInt(10001)}[0],
-	})
 
 	// Build ingress rules
 	ingressRules := []networkingv1.NetworkPolicyIngressRule{
@@ -319,8 +272,8 @@ func (r *NetworkPolicyController) buildHeadNetworkPolicy(ctx context.Context, in
 		},
 	}
 
-	// Rule 4: Monitoring access (optional, only if monitoring namespace is configured in DSCI)
-	if monitoringNamespace, err := r.getDSCIMonitoringNamespace(ctx); err == nil && monitoringNamespace != "" {
+	// Rule 4: Monitoring access (optional, set by ODH operator via MONITORING_NAMESPACE env var)
+	if monitoringNamespace := os.Getenv("MONITORING_NAMESPACE"); monitoringNamespace != "" {
 		logger.V(1).Info("Adding monitoring access rule", "namespace", monitoringNamespace)
 		monitoringRule := networkingv1.NetworkPolicyIngressRule{
 			From: []networkingv1.NetworkPolicyPeer{
@@ -443,13 +396,13 @@ func (r *NetworkPolicyController) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// isNetworkPolicyEnabled checks if NetworkPolicy is enabled for this RayCluster via annotation
-func (r *NetworkPolicyController) isNetworkPolicyEnabled(instance *rayv1.RayCluster) bool {
+// isSecuredTrustedNetworkEnabled checks if NetworkPolicy is enabled for this RayCluster via annotation
+func (r *NetworkPolicyController) isSecureTrustedNetworkEnabled(instance *rayv1.RayCluster) bool {
 	if instance.Annotations == nil {
 		return false
 	}
 
-	value, exists := instance.Annotations[utils.EnableNetworkPolicyAnnotationKey]
+	value, exists := instance.Annotations[utils.EnableSecureTrustedNetworkAnnotationKey]
 	if !exists {
 		return false
 	}

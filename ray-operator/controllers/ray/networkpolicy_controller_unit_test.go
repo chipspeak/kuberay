@@ -12,7 +12,6 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -48,7 +47,7 @@ func setupNetworkPolicyTest(_ *testing.T) {
 			Name:      "test-cluster",
 			Namespace: "default",
 			Annotations: map[string]string{
-				utils.EnableNetworkPolicyAnnotationKey: "true",
+				utils.EnableSecureTrustedNetworkAnnotationKey: "true",
 			},
 		},
 		Spec: rayv1.RayClusterSpec{
@@ -73,7 +72,7 @@ func setupNetworkPolicyTest(_ *testing.T) {
 			Name:      "test-cluster-rayjob",
 			Namespace: "default",
 			Annotations: map[string]string{
-				utils.EnableNetworkPolicyAnnotationKey: "true",
+				utils.EnableSecureTrustedNetworkAnnotationKey: "true",
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
@@ -221,21 +220,16 @@ func TestBuildHeadNetworkPolicy_BasicCluster(t *testing.T) {
 	// Verify Rule 4: Secured ports - NO FROM (allows all)
 	securedRule := policy.Spec.Ingress[3]
 	assert.Empty(t, securedRule.From, "Secured ports rule should have NO from (allows all)")
-	assert.Len(t, securedRule.Ports, 2, "Secured ports rule should have 2 ports (8443, 10001)")
+	assert.Len(t, securedRule.Ports, 1, "Secured ports rule should have 1 port (8443 only)")
 
-	// Check for mTLS ports (8443 and 10001)
+	// Check for mTLS port 8443 (port 10001 is NOT in this rule - it's restricted to namespace/cluster/operator)
 	portFound8443 := false
-	portFound10001Secured := false
 	for _, port := range securedRule.Ports {
-		switch port.Port.IntVal {
-		case 8443:
+		if port.Port.IntVal == 8443 {
 			portFound8443 = true
-		case 10001:
-			portFound10001Secured = true
 		}
 	}
 	assert.True(t, portFound8443, "Should include mTLS port 8443")
-	assert.True(t, portFound10001Secured, "Should include secured port 10001")
 }
 
 func TestBuildHeadNetworkPolicy_WithMTLS(t *testing.T) {
@@ -274,21 +268,10 @@ func TestBuildHeadNetworkPolicy_WithMTLS(t *testing.T) {
 	// Find the secured ports rule (last rule)
 	securedRule := policy.Spec.Ingress[len(policy.Spec.Ingress)-1]
 	assert.Empty(t, securedRule.From, "Secured ports rule should have NO from (allows all)")
-	assert.Len(t, securedRule.Ports, 2, "Secured ports rule should have 2 ports (8443, 10001)")
+	assert.Len(t, securedRule.Ports, 1, "Secured ports rule should have 1 port (8443 only)")
 
-	// Check for both mTLS ports
-	portFound8443 := false
-	portFound10001 := false
-	for _, port := range securedRule.Ports {
-		switch port.Port.IntVal {
-		case 8443:
-			portFound8443 = true
-		case 10001:
-			portFound10001 = true
-		}
-	}
-	assert.True(t, portFound8443, "Should include mTLS port 8443")
-	assert.True(t, portFound10001, "Should include client port 10001 when mTLS enabled")
+	// Check for mTLS port 8443 (port 10001 is NOT in this rule - it's restricted to namespace/cluster/operator)
+	assert.Equal(t, int32(8443), securedRule.Ports[0].Port.IntVal, "Should only include mTLS port 8443")
 }
 
 func TestBuildHeadNetworkPolicy_WithoutMTLS(t *testing.T) {
@@ -300,21 +283,10 @@ func TestBuildHeadNetworkPolicy_WithoutMTLS(t *testing.T) {
 	// Find the secured ports rule (last rule)
 	securedRule := policy.Spec.Ingress[len(policy.Spec.Ingress)-1]
 	assert.Empty(t, securedRule.From, "Secured ports rule should have NO from (allows all)")
-	assert.Len(t, securedRule.Ports, 2, "Secured ports rule should have 2 ports (8443, 10001)")
+	assert.Len(t, securedRule.Ports, 1, "Secured ports rule should have 1 port (8443 only)")
 
-	// Check for both ports (mTLS is now always assumed)
-	portFound8443 := false
-	portFound10001 := false
-	for _, port := range securedRule.Ports {
-		switch port.Port.IntVal {
-		case 8443:
-			portFound8443 = true
-		case 10001:
-			portFound10001 = true
-		}
-	}
-	assert.True(t, portFound8443, "Should include mTLS port 8443")
-	assert.True(t, portFound10001, "Should include secured port 10001")
+	// Check for mTLS port 8443 (port 10001 is NOT in this rule - it's restricted to namespace/cluster/operator)
+	assert.Equal(t, int32(8443), securedRule.Ports[0].Port.IntVal, "Should only include mTLS port 8443")
 }
 
 func TestBuildWorkerNetworkPolicy_BasicCluster(t *testing.T) {
@@ -399,28 +371,9 @@ func TestBuildHeadNetworkPolicy_ClusterWithRayJob(t *testing.T) {
 func TestBuildHeadNetworkPolicy_MonitoringAccess(t *testing.T) {
 	setupNetworkPolicyTest(t)
 
-	// Create DSCI with monitoring namespace configured
-	dsci := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "dscinitialization.opendatahub.io/v1",
-			"kind":       "DSCInitialization",
-			"metadata": map[string]interface{}{
-				"name": "default-dsci",
-			},
-			"spec": map[string]interface{}{
-				"monitoring": map[string]interface{}{
-					"namespace": "openshift-monitoring",
-				},
-			},
-		},
-	}
-
-	// Create fake client with DSCI
-	scheme := runtime.NewScheme()
-	testNetworkPolicyController.Client = fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(dsci).
-		Build()
+	// Set MONITORING_NAMESPACE env var (simulates ODH operator setting it)
+	os.Setenv("MONITORING_NAMESPACE", "openshift-monitoring")
+	defer os.Unsetenv("MONITORING_NAMESPACE")
 
 	// Test building head NetworkPolicy with monitoring access
 	kubeRayNamespaces := []string{"ray-system"}
@@ -440,14 +393,14 @@ func TestBuildHeadNetworkPolicy_MonitoringAccess(t *testing.T) {
 		}
 	}
 
-	require.NotNil(t, monitoringRule, "Should have monitoring rule with port 8080 when DSCI monitoring namespace is configured")
+	require.NotNil(t, monitoringRule, "Should have monitoring rule with port 8080 when MONITORING_NAMESPACE is set")
 	assert.Len(t, monitoringRule.Ports, 1, "Monitoring rule should have one port")
 	assert.Equal(t, int32(8080), monitoringRule.Ports[0].Port.IntVal, "Should be port 8080")
 
-	// Should allow from the monitoring namespace returned by DSCI
+	// Should allow from the monitoring namespace from env var
 	assert.Len(t, monitoringRule.From, 1, "Should have one monitoring peer")
 
-	// Check that it uses the namespace from DSCI
+	// Check that it uses the namespace from env var
 	foundMonitoringNamespace := false
 	for _, peer := range monitoringRule.From {
 		if peer.NamespaceSelector != nil {
@@ -460,17 +413,14 @@ func TestBuildHeadNetworkPolicy_MonitoringAccess(t *testing.T) {
 			}
 		}
 	}
-	assert.True(t, foundMonitoringNamespace, "Should allow monitoring namespace from DSCI")
+	assert.True(t, foundMonitoringNamespace, "Should allow monitoring namespace from env var")
 }
 
 func TestBuildHeadNetworkPolicy_NoMonitoring(t *testing.T) {
 	setupNetworkPolicyTest(t)
 
-	// Create fake client without DSCI (empty)
-	scheme := runtime.NewScheme()
-	testNetworkPolicyController.Client = fake.NewClientBuilder().
-		WithScheme(scheme).
-		Build()
+	// Ensure MONITORING_NAMESPACE is not set
+	os.Unsetenv("MONITORING_NAMESPACE")
 
 	// Test building head NetworkPolicy without monitoring access
 	kubeRayNamespaces := []string{"ray-system"}
@@ -490,7 +440,7 @@ func TestBuildHeadNetworkPolicy_NoMonitoring(t *testing.T) {
 		}
 	}
 
-	assert.Nil(t, monitoringRule, "Should NOT have monitoring rule when DSCI monitoring namespace is not configured")
+	assert.Nil(t, monitoringRule, "Should NOT have monitoring rule when MONITORING_NAMESPACE is not set")
 }
 
 func TestBuildHeadNetworkPolicy_SecuredPorts(t *testing.T) {
@@ -515,21 +465,10 @@ func TestBuildHeadNetworkPolicy_SecuredPorts(t *testing.T) {
 	}
 
 	require.NotNil(t, securedPortsRule, "Should have secured ports rule")
-	assert.Len(t, securedPortsRule.Ports, 2, "Should have 2 secured ports (8443, 10001)")
+	assert.Len(t, securedPortsRule.Ports, 1, "Should have 1 secured port (8443 only)")
 
-	// Check for mTLS ports (always present, mTLS assumed)
-	portFound8443 := false
-	portFound10001 := false
-	for _, port := range securedPortsRule.Ports {
-		switch port.Port.IntVal {
-		case 8443:
-			portFound8443 = true
-		case 10001:
-			portFound10001 = true
-		}
-	}
-	assert.True(t, portFound8443, "Should include mTLS port 8443")
-	assert.True(t, portFound10001, "Should include secured port 10001")
+	// Check for mTLS port 8443 (port 10001 is NOT in this rule - it's restricted to namespace/cluster/operator)
+	assert.Equal(t, int32(8443), securedPortsRule.Ports[0].Port.IntVal, "Should only include mTLS port 8443")
 }
 
 // Helper function to check if slice contains string
@@ -576,26 +515,46 @@ func TestGetKubeRayNamespaces_NonOpenShift_Fallback(t *testing.T) {
 	assert.Equal(t, []string{"ray-system"}, namespaces)
 }
 
+func TestGetKubeRayNamespaces_OpenShift_WithAppNamespace(t *testing.T) {
+	setupNetworkPolicyTest(t)
+
+	// Simulate OpenShift (Route API exists)
+	testNetworkPolicyController.RESTMapper = &stubRESTMapper{hasRouteAPI: true}
+
+	// Test with APPLICATION_NAMESPACE set (from ODH operator)
+	originalAppEnv := os.Getenv("APPLICATION_NAMESPACE")
+	originalPodEnv := os.Getenv("POD_NAMESPACE")
+	os.Setenv("APPLICATION_NAMESPACE", "odh-applications")
+	defer func() {
+		os.Setenv("APPLICATION_NAMESPACE", originalAppEnv)
+		os.Setenv("POD_NAMESPACE", originalPodEnv)
+	}()
+
+	namespaces := testNetworkPolicyController.getKubeRayNamespaces(context.Background())
+
+	// Should use APPLICATION_NAMESPACE
+	assert.Equal(t, []string{"odh-applications"}, namespaces)
+}
+
 func TestGetKubeRayNamespaces_OpenShift_WithPodNamespace(t *testing.T) {
 	setupNetworkPolicyTest(t)
 
 	// Simulate OpenShift (Route API exists)
 	testNetworkPolicyController.RESTMapper = &stubRESTMapper{hasRouteAPI: true}
 
-	// Create fake client without DSCI
-	scheme := runtime.NewScheme()
-	testNetworkPolicyController.Client = fake.NewClientBuilder().
-		WithScheme(scheme).
-		Build()
-
-	// Test with POD_NAMESPACE set (DSCInitialization not found)
-	originalEnv := os.Getenv("POD_NAMESPACE")
+	// Test with POD_NAMESPACE set (APPLICATION_NAMESPACE not set)
+	originalAppEnv := os.Getenv("APPLICATION_NAMESPACE")
+	originalPodEnv := os.Getenv("POD_NAMESPACE")
+	os.Unsetenv("APPLICATION_NAMESPACE")
 	os.Setenv("POD_NAMESPACE", "custom-openshift-namespace")
-	defer os.Setenv("POD_NAMESPACE", originalEnv)
+	defer func() {
+		os.Setenv("APPLICATION_NAMESPACE", originalAppEnv)
+		os.Setenv("POD_NAMESPACE", originalPodEnv)
+	}()
 
 	namespaces := testNetworkPolicyController.getKubeRayNamespaces(context.Background())
 
-	// Should use POD_NAMESPACE when DSCInitialization not found
+	// Should use POD_NAMESPACE
 	assert.Equal(t, []string{"custom-openshift-namespace"}, namespaces)
 }
 
@@ -605,16 +564,15 @@ func TestGetKubeRayNamespaces_OpenShift_Fallback(t *testing.T) {
 	// Simulate OpenShift (Route API exists)
 	testNetworkPolicyController.RESTMapper = &stubRESTMapper{hasRouteAPI: true}
 
-	// Create fake client without DSCI
-	scheme := runtime.NewScheme()
-	testNetworkPolicyController.Client = fake.NewClientBuilder().
-		WithScheme(scheme).
-		Build()
-
-	// Test fallback when POD_NAMESPACE is not set and DSCInitialization not found
-	originalEnv := os.Getenv("POD_NAMESPACE")
+	// Test fallback when neither APPLICATION_NAMESPACE nor POD_NAMESPACE is set
+	originalAppEnv := os.Getenv("APPLICATION_NAMESPACE")
+	originalPodEnv := os.Getenv("POD_NAMESPACE")
+	os.Unsetenv("APPLICATION_NAMESPACE")
 	os.Unsetenv("POD_NAMESPACE")
-	defer os.Setenv("POD_NAMESPACE", originalEnv)
+	defer func() {
+		os.Setenv("APPLICATION_NAMESPACE", originalAppEnv)
+		os.Setenv("POD_NAMESPACE", originalPodEnv)
+	}()
 
 	namespaces := testNetworkPolicyController.getKubeRayNamespaces(context.Background())
 
@@ -759,10 +717,10 @@ func TestIsNetworkPolicyEnabled_AnnotationPresent(t *testing.T) {
 	// Test with annotation present and true
 	rayCluster := testRayClusterBasic.DeepCopy()
 	rayCluster.Annotations = map[string]string{
-		utils.EnableNetworkPolicyAnnotationKey: "true",
+		utils.EnableSecureTrustedNetworkAnnotationKey: "true",
 	}
 
-	enabled := testNetworkPolicyController.isNetworkPolicyEnabled(rayCluster)
+	enabled := testNetworkPolicyController.isSecureTrustedNetworkEnabled(rayCluster)
 	assert.True(t, enabled, "Should be enabled when annotation is 'true'")
 }
 
@@ -793,10 +751,10 @@ func TestIsNetworkPolicyEnabled_AnnotationVariations(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rayCluster := testRayClusterBasic.DeepCopy()
 			rayCluster.Annotations = map[string]string{
-				utils.EnableNetworkPolicyAnnotationKey: tc.value,
+				utils.EnableSecureTrustedNetworkAnnotationKey: tc.value,
 			}
 
-			enabled := testNetworkPolicyController.isNetworkPolicyEnabled(rayCluster)
+			enabled := testNetworkPolicyController.isSecureTrustedNetworkEnabled(rayCluster)
 			assert.Equal(t, tc.expected, enabled, "Value '%s' should return %v", tc.value, tc.expected)
 		})
 	}
@@ -809,11 +767,11 @@ func TestIsNetworkPolicyEnabled_NoAnnotation(t *testing.T) {
 	rayCluster := testRayClusterBasic.DeepCopy()
 	rayCluster.Annotations = nil
 
-	enabled := testNetworkPolicyController.isNetworkPolicyEnabled(rayCluster)
+	enabled := testNetworkPolicyController.isSecureTrustedNetworkEnabled(rayCluster)
 	assert.False(t, enabled, "Should be disabled when no annotations")
 
 	// Test with empty annotations map
 	rayCluster.Annotations = map[string]string{}
-	enabled = testNetworkPolicyController.isNetworkPolicyEnabled(rayCluster)
+	enabled = testNetworkPolicyController.isSecureTrustedNetworkEnabled(rayCluster)
 	assert.False(t, enabled, "Should be disabled when annotation key not present")
 }
