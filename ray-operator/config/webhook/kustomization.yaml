@@ -11,7 +11,7 @@ patches:
 - patch: |-
     - op: replace
       path: /webhooks/0/clientConfig/service/namespace
-      value: ray-system
+      value: redhat-ods-applications
   target:
     kind: ValidatingWebhookConfiguration
     name: validating-webhook-configuration
@@ -19,7 +19,7 @@ patches:
 - patch: |-
     - op: replace
       path: /webhooks/0/clientConfig/service/namespace
-      value: ray-system
+      value: redhat-ods-applications
   target:
     kind: MutatingWebhookConfiguration
     name: mutating-webhook-configuration

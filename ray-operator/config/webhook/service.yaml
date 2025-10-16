@@ -4,13 +4,13 @@ kind: Service
 metadata:
   labels:
     app.kubernetes.io/name: service
-    app.kubernetes.io/instance: webhook-service
+    app.kubernetes.io/instance: kuberay-webhook-service
     app.kubernetes.io/component: webhook
     app.kubernetes.io/created-by: kuberay-operator
     app.kubernetes.io/part-of: kuberay-operator
     app.kubernetes.io/managed-by: kustomize
-  name: webhook-service
-  namespace: ray-system
+  name: kuberay-webhook-service
+  namespace: redhat-ods-applications
 spec:
   ports:
     - port: 443

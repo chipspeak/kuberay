@@ -1,5 +1,5 @@
 # Adds namespace to all resources.
-namespace: ray-system
+namespace: redhat-ods-applications
 
 # Value of this field is prepended to the
 # names of all resources, e.g. a deployment named
@@ -83,7 +83,7 @@ replacements:
 - source:
     fieldPath: .metadata.name
     kind: Service
-    name: webhook-service
+    name: kuberay-webhook-service
     version: v1
   targets:
   - fieldPaths:
@@ -99,7 +99,7 @@ replacements:
 - source:
     fieldPath: .metadata.namespace
     kind: Service
-    name: webhook-service
+    name: kuberay-webhook-service
     version: v1
   targets:
   - fieldPaths:
