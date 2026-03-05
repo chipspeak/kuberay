@@ -47,6 +47,14 @@ const (
 	//
 	// Enables RayCronJob controller for scheduled RayJob execution.
 	RayCronJob featuregate.Feature = "RayCronJob"
+
+	// owner: @chipspeak @kryanbeane
+	// rep: N/A
+	// alpha: v1.7
+	//
+	// Enables mTLS (spec.tlsOptions) for RayClusters. Named consistently with RayClusterNetworkIsolation
+	// (network policies); both may be folded under a shared gate in the future.
+	RayClusterMTLS featuregate.Feature = "RayClusterMTLS"
 )
 
 func init() {
@@ -59,6 +67,7 @@ var defaultFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
 	RayMultiHostIndexing:         {Default: true, PreRelease: featuregate.Beta},
 	RayServiceIncrementalUpgrade: {Default: false, PreRelease: featuregate.Alpha},
 	RayCronJob:                   {Default: false, PreRelease: featuregate.Alpha},
+	RayClusterMTLS:               {Default: false, PreRelease: featuregate.Alpha},
 }
 
 // SetFeatureGateDuringTest is a helper method to override feature gates in tests.
