@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync" // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
-	"time" // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+	"sync" // DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+	"time" // DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -28,7 +28,7 @@ import (
 
 	rayv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	"github.com/ray-project/kuberay/ray-operator/controllers/ray/utils"
-	"github.com/ray-project/kuberay/ray-operator/pkg/features" // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+	"github.com/ray-project/kuberay/ray-operator/pkg/features" // DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 )
 
 // NetworkPolicyController is an independent controller that watches RayCluster
@@ -37,18 +37,18 @@ type NetworkPolicyController struct {
 	client.Client
 	Scheme                 *runtime.Scheme
 	Recorder               events.EventRecorder
-	isOpenShift            bool                     // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
-	legacyMigrationMutex   sync.Mutex               // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
-	legacyMigrationRetries map[client.ObjectKey]int // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+	isOpenShift            bool                     // DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+	legacyMigrationMutex   sync.Mutex               // DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+	legacyMigrationRetries map[client.ObjectKey]int // DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 }
 
-// DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+// DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 const (
 	legacyNetworkPolicyMigrationRequeueInterval = 10 * time.Second
 	legacyNetworkPolicyMigrationMaxRetries      = 6
 )
 
-// DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+// DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 func NewNetworkPolicyController(mgr manager.Manager, openShift ...bool) (*NetworkPolicyController, error) {
 	isOpenShift := false
 	if len(openShift) > 0 {
@@ -58,12 +58,12 @@ func NewNetworkPolicyController(mgr manager.Manager, openShift ...bool) (*Networ
 		Client:                 mgr.GetClient(),
 		Scheme:                 mgr.GetScheme(),
 		Recorder:               mgr.GetEventRecorder("networkpolicy-controller"),
-		isOpenShift:            isOpenShift, // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+		isOpenShift:            isOpenShift, // DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 		legacyMigrationRetries: make(map[client.ObjectKey]int),
 	}, nil
 }
 
-// DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+// DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 func (r *NetworkPolicyController) shouldRequeueLegacyMigration(key client.ObjectKey) bool {
 	r.legacyMigrationMutex.Lock()
 	defer r.legacyMigrationMutex.Unlock()
@@ -81,7 +81,7 @@ func (r *NetworkPolicyController) shouldRequeueLegacyMigration(key client.Object
 	return true
 }
 
-// DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+// DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 func (r *NetworkPolicyController) resetLegacyMigration(key client.ObjectKey) {
 	r.legacyMigrationMutex.Lock()
 	defer r.legacyMigrationMutex.Unlock()
@@ -98,7 +98,7 @@ func (r *NetworkPolicyController) Reconcile(ctx context.Context, req ctrl.Reques
 	instance := &rayv1.RayCluster{}
 	if err := r.Get(ctx, req.NamespacedName, instance); err != nil {
 		if errors.IsNotFound(err) {
-			r.resetLegacyMigration(req.NamespacedName) // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+			r.resetLegacyMigration(req.NamespacedName) // DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 			// RayCluster was deleted - NetworkPolicies will be garbage collected automatically
 			return ctrl.Result{}, nil
 		}
@@ -117,7 +117,7 @@ func (r *NetworkPolicyController) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if instance.Spec.NetworkPolicy == nil {
-		// DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+		// DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 		if r.isOpenShift && features.Enabled(features.RayClusterNetworkPolicy) &&
 			instance.Annotations[utils.EnableSecureTrustedNetworkAnnotationKey] == "true" {
 			if r.shouldRequeueLegacyMigration(req.NamespacedName) {
