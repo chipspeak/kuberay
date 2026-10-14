@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync" // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 	"time" // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 
 	"github.com/go-logr/logr"
@@ -34,10 +35,18 @@ import (
 // resources and manages NetworkPolicies for them.
 type NetworkPolicyController struct {
 	client.Client
-	Scheme      *runtime.Scheme
-	Recorder    events.EventRecorder
-	isOpenShift bool // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+	Scheme                 *runtime.Scheme
+	Recorder               events.EventRecorder
+	isOpenShift            bool                     // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+	legacyMigrationMutex   sync.Mutex               // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+	legacyMigrationRetries map[client.ObjectKey]int // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 }
+
+// DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+const (
+	legacyNetworkPolicyMigrationRequeueInterval = 10 * time.Second
+	legacyNetworkPolicyMigrationMaxRetries      = 6
+)
 
 // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 func NewNetworkPolicyController(mgr manager.Manager, openShift ...bool) (*NetworkPolicyController, error) {
@@ -46,11 +55,38 @@ func NewNetworkPolicyController(mgr manager.Manager, openShift ...bool) (*Networ
 		isOpenShift = openShift[0]
 	}
 	return &NetworkPolicyController{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		Recorder:    mgr.GetEventRecorder("networkpolicy-controller"),
-		isOpenShift: isOpenShift, // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+		Client:                 mgr.GetClient(),
+		Scheme:                 mgr.GetScheme(),
+		Recorder:               mgr.GetEventRecorder("networkpolicy-controller"),
+		isOpenShift:            isOpenShift, // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+		legacyMigrationRetries: make(map[client.ObjectKey]int),
 	}, nil
+}
+
+// DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+func (r *NetworkPolicyController) shouldRequeueLegacyMigration(key client.ObjectKey) bool {
+	r.legacyMigrationMutex.Lock()
+	defer r.legacyMigrationMutex.Unlock()
+
+	if r.legacyMigrationRetries == nil {
+		r.legacyMigrationRetries = make(map[client.ObjectKey]int)
+	}
+
+	retries := r.legacyMigrationRetries[key]
+	if retries >= legacyNetworkPolicyMigrationMaxRetries {
+		delete(r.legacyMigrationRetries, key)
+		return false
+	}
+	r.legacyMigrationRetries[key] = retries + 1
+	return true
+}
+
+// DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+func (r *NetworkPolicyController) resetLegacyMigration(key client.ObjectKey) {
+	r.legacyMigrationMutex.Lock()
+	defer r.legacyMigrationMutex.Unlock()
+
+	delete(r.legacyMigrationRetries, key)
 }
 
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;delete
@@ -62,6 +98,7 @@ func (r *NetworkPolicyController) Reconcile(ctx context.Context, req ctrl.Reques
 	instance := &rayv1.RayCluster{}
 	if err := r.Get(ctx, req.NamespacedName, instance); err != nil {
 		if errors.IsNotFound(err) {
+			r.resetLegacyMigration(req.NamespacedName) // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 			// RayCluster was deleted - NetworkPolicies will be garbage collected automatically
 			return ctrl.Result{}, nil
 		}
@@ -69,25 +106,32 @@ func (r *NetworkPolicyController) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if instance.DeletionTimestamp != nil {
+		r.resetLegacyMigration(req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
 
 	if manager := utils.ManagedByExternalController(instance.Spec.ManagedBy); manager != nil {
+		r.resetLegacyMigration(req.NamespacedName)
 		logger.Info("Skipping RayCluster managed by a custom controller", "managed-by", manager)
 		return ctrl.Result{}, nil
 	}
 
 	if instance.Spec.NetworkPolicy == nil {
 		// DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
-		if r.isOpenShift && features.Enabled(features.RayClusterMTLS) &&
+		if r.isOpenShift && features.Enabled(features.RayClusterNetworkPolicy) &&
 			instance.Annotations[utils.EnableSecureTrustedNetworkAnnotationKey] == "true" {
-			logger.Info("NetworkPolicy migration pending for legacy OpenShift RayCluster; preserving existing policies", "cluster", instance.Name, "namespace", instance.Namespace)
-			return ctrl.Result{RequeueAfter: time.Second}, nil
+			if r.shouldRequeueLegacyMigration(req.NamespacedName) {
+				logger.Info("NetworkPolicy migration pending for legacy OpenShift RayCluster; preserving existing policies", "cluster", instance.Name, "namespace", instance.Namespace)
+				return ctrl.Result{RequeueAfter: legacyNetworkPolicyMigrationRequeueInterval}, nil
+			}
+			logger.Info("NetworkPolicy migration grace period expired for legacy OpenShift RayCluster; cleaning up stale policies", "cluster", instance.Name, "namespace", instance.Namespace)
 		}
+		r.resetLegacyMigration(req.NamespacedName) // OPENSHIFT SPECIFIC
 		logger.V(1).Info("NetworkPolicy not configured for RayCluster", "cluster", instance.Name, "namespace", instance.Namespace)
 		// If NetworkPolicies exist but NetworkPolicy config is removed, clean them up
 		return ctrl.Result{}, r.deleteStaleNetworkPolicies(ctx, instance, nil)
 	}
+	r.resetLegacyMigration(req.NamespacedName) // OPENSHIFT SPECIFIC
 
 	logger.Info("Reconciling NetworkPolicies for RayCluster", "cluster", instance.Name, "namespace", instance.Namespace)
 
