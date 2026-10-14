@@ -43,3 +43,23 @@ webhooks:
     resources:
     - rayclusters
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: kuberay-webhook-service
+      namespace: $(namespace)
+      path: /mutate-ray-io-v1-rayjob
+  failurePolicy: Fail
+  name: mrayjob.kb.io
+  rules:
+  - apiGroups:
+    - ray.io
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - rayjobs
+  sideEffects: None
