@@ -1,3 +1,12 @@
-- op: add
-  path: /spec/template/spec/containers/0/args/-
-  value: --feature-gates=RayClusterNetworkPolicy=true,RayClusterMTLS=true
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kuberay-operator
+spec:
+  template:
+    spec:
+      containers:
+      - name: kuberay-operator
+        args:
+        - --metrics-cert-path=/etc/metrics-certs
+        - --feature-gates=RayClusterStatusConditions=true,RayClusterNetworkPolicy=true,RayClusterMTLS=true

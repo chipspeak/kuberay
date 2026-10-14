@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time" // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -26,21 +27,29 @@ import (
 
 	rayv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
 	"github.com/ray-project/kuberay/ray-operator/controllers/ray/utils"
+	"github.com/ray-project/kuberay/ray-operator/pkg/features" // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 )
 
 // NetworkPolicyController is an independent controller that watches RayCluster
 // resources and manages NetworkPolicies for them.
 type NetworkPolicyController struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder events.EventRecorder
+	Scheme      *runtime.Scheme
+	Recorder    events.EventRecorder
+	isOpenShift bool // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 }
 
-func NewNetworkPolicyController(mgr manager.Manager) (*NetworkPolicyController, error) {
+// DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+func NewNetworkPolicyController(mgr manager.Manager, openShift ...bool) (*NetworkPolicyController, error) {
+	isOpenShift := false
+	if len(openShift) > 0 {
+		isOpenShift = openShift[0]
+	}
 	return &NetworkPolicyController{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder("networkpolicy-controller"),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Recorder:    mgr.GetEventRecorder("networkpolicy-controller"),
+		isOpenShift: isOpenShift, // DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 	}, nil
 }
 
@@ -69,6 +78,12 @@ func (r *NetworkPolicyController) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if instance.Spec.NetworkPolicy == nil {
+		// DO NOTE REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
+		if r.isOpenShift && features.Enabled(features.RayClusterMTLS) &&
+			instance.Annotations[utils.EnableSecureTrustedNetworkAnnotationKey] == "true" {
+			logger.Info("NetworkPolicy migration pending for legacy OpenShift RayCluster; preserving existing policies", "cluster", instance.Name, "namespace", instance.Namespace)
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
 		logger.V(1).Info("NetworkPolicy not configured for RayCluster", "cluster", instance.Name, "namespace", instance.Namespace)
 		// If NetworkPolicies exist but NetworkPolicy config is removed, clean them up
 		return ctrl.Result{}, r.deleteStaleNetworkPolicies(ctx, instance, nil)
