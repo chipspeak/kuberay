@@ -120,12 +120,73 @@ func TestCreateRayJobSubmitterIfNeed(t *testing.T) {
 	assert.Equal(t, k8sJob.Labels[utils.RayOriginatedFromCRDLabelKey], utils.RayOriginatedFromCRDLabelValue(utils.RayJobCRD))
 }
 
+// TestCreateRayJobSubmitterIfNeedClusterSelectorLabelsPodTemplate verifies that
+// the clusterSelector path applies the same labels to the actual submitter Pod
+// template as the RayJob-owned cluster path.
+func TestCreateRayJobSubmitterIfNeedClusterSelectorLabelsPodTemplate(t *testing.T) {
+	newScheme := runtime.NewScheme()
+	require.NoError(t, rayv1.AddToScheme(newScheme))
+	require.NoError(t, batchv1.AddToScheme(newScheme))
+	require.NoError(t, corev1.AddToScheme(newScheme))
+
+	rayJob := &rayv1.RayJob{
+		ObjectMeta: metav1.ObjectMeta{Name: "selector-rayjob", Namespace: "default"},
+		Spec: rayv1.RayJobSpec{
+			SubmissionMode: rayv1.K8sJobMode,
+			ClusterSelector: map[string]string{
+				utils.RayClusterLabelKey: "existing-cluster",
+			},
+			Entrypoint: "echo test",
+			SubmitterPodTemplate: &corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"existing": "label"}},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: utils.SubmitterContainerName}},
+				},
+			},
+		},
+		Status: rayv1.RayJobStatus{
+			DashboardURL: "http://existing-cluster-head-svc:8265",
+			JobId:        "selector-job-id",
+		},
+	}
+	rayCluster := &rayv1.RayCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "existing-cluster", Namespace: "default"},
+		Spec: rayv1.RayClusterSpec{
+			HeadGroupSpec: rayv1.HeadGroupSpec{
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "ray-head", Image: "rayproject/ray:latest"}},
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := clientFake.NewClientBuilder().WithScheme(newScheme).WithObjects(rayJob, rayCluster).Build()
+	reconciler := &RayJobReconciler{
+		Client:   fakeClient,
+		Recorder: &events.FakeRecorder{},
+		Scheme:   newScheme,
+	}
+
+	require.NoError(t, reconciler.createK8sJobIfNeed(t.Context(), rayJob, rayCluster))
+
+	createdJob := &batchv1.Job{}
+	require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(rayJob), createdJob))
+	assert.Equal(t, "label", createdJob.Spec.Template.Labels["existing"])
+	assert.Equal(t, rayJob.Name, createdJob.Spec.Template.Labels[utils.RayOriginatedFromCRNameLabelKey])
+	assert.Equal(t, utils.RayOriginatedFromCRDLabelValue(utils.RayJobCRD), createdJob.Spec.Template.Labels[utils.RayOriginatedFromCRDLabelKey])
+	assert.Equal(t, utils.ComponentName, createdJob.Spec.Template.Labels[utils.KubernetesCreatedByLabelKey])
+}
+
 func TestGetSubmitterTemplate(t *testing.T) {
 	// RayJob instance with user-provided submitter pod template.
 	rayJobInstanceWithTemplate := &rayv1.RayJob{
+		ObjectMeta: metav1.ObjectMeta{Name: "custom-template-rayjob"},
 		Spec: rayv1.RayJobSpec{
 			Entrypoint: "echo no quote 'single quote' \"double quote\"",
 			SubmitterPodTemplate: &corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"existing": "label"}},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{
@@ -144,6 +205,7 @@ func TestGetSubmitterTemplate(t *testing.T) {
 	// RayJob instance without user-provided submitter pod template.
 	// In this case we should use the image of the Ray Head, so specify the image so we can test it.
 	rayJobInstanceWithoutTemplate := &rayv1.RayJob{
+		ObjectMeta: metav1.ObjectMeta{Name: "default-template-rayjob"},
 		Spec: rayv1.RayJobSpec{
 			Entrypoint: "echo no quote 'single quote' \"double quote\"",
 			RayClusterSpec: &rayv1.RayClusterSpec{
@@ -185,6 +247,10 @@ func TestGetSubmitterTemplate(t *testing.T) {
 	submitterTemplate, err := getSubmitterTemplate(rayJobInstanceWithTemplate, rayClusterInstance)
 	require.NoError(t, err)
 	assert.Equal(t, "user-command", submitterTemplate.Spec.Containers[utils.RayContainerIndex].Command[0])
+	assert.Equal(t, "label", submitterTemplate.Labels["existing"])
+	assert.Equal(t, rayJobInstanceWithTemplate.Name, submitterTemplate.Labels[utils.RayOriginatedFromCRNameLabelKey])
+	assert.Equal(t, utils.RayOriginatedFromCRDLabelValue(utils.RayJobCRD), submitterTemplate.Labels[utils.RayOriginatedFromCRDLabelKey])
+	assert.Equal(t, utils.ComponentName, submitterTemplate.Labels[utils.KubernetesCreatedByLabelKey])
 
 	// Test 2: User provided template without command
 	rayJobInstanceWithTemplate.Spec.SubmitterPodTemplate.Spec.Containers[utils.RayContainerIndex].Command = []string{}
@@ -204,6 +270,9 @@ func TestGetSubmitterTemplate(t *testing.T) {
 	assert.Equal(t, []string{"/bin/bash", "-ce", "--"}, submitterTemplate.Spec.Containers[utils.RayContainerIndex].Command)
 	assert.Equal(t, expectedK8sJobModeArgs, submitterTemplate.Spec.Containers[utils.RayContainerIndex].Args)
 	assert.Equal(t, "rayproject/ray:custom-version", submitterTemplate.Spec.Containers[utils.RayContainerIndex].Image)
+	assert.Equal(t, rayJobInstanceWithoutTemplate.Name, submitterTemplate.Labels[utils.RayOriginatedFromCRNameLabelKey])
+	assert.Equal(t, utils.RayOriginatedFromCRDLabelValue(utils.RayJobCRD), submitterTemplate.Labels[utils.RayOriginatedFromCRDLabelKey])
+	assert.Equal(t, utils.ComponentName, submitterTemplate.Labels[utils.KubernetesCreatedByLabelKey])
 
 	// Test 4: Check default PYTHONUNBUFFERED setting
 	submitterTemplate, err = getSubmitterTemplate(rayJobInstanceWithoutTemplate, rayClusterInstance)

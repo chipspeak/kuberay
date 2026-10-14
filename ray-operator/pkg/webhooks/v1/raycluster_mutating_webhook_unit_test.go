@@ -76,6 +76,31 @@ func TestWebhookOpenShiftNetworkPolicyPreservesExplicitConfig(t *testing.T) {
 	assert.Equal(t, []networkingv1.NetworkPolicyIngressRule{customRule}, cluster.Spec.NetworkPolicy.Head.IngressRules)
 }
 
+func TestWebhookOpenShiftPreservesExplicitTLSAndNetworkPolicy(t *testing.T) {
+	features.SetFeatureGateDuringTest(t, features.RayClusterMTLS, true)
+	features.SetFeatureGateDuringTest(t, features.RayClusterNetworkPolicy, true)
+	mode := rayv1.NetworkPolicyDenyAllEgress
+	cluster := &rayv1.RayCluster{
+		Spec: rayv1.RayClusterSpec{
+			TLSOptions: &rayv1.TLSOptions{Enabled: new(false)},
+			NetworkPolicy: &rayv1.NetworkPolicyConfig{
+				Mode: &mode,
+				Head: &rayv1.NetworkPolicyRules{
+					IngressRules: []networkingv1.NetworkPolicyIngressRule{{}},
+				},
+			},
+		},
+	}
+	wantNetworkPolicy := cluster.Spec.NetworkPolicy.DeepCopy()
+
+	defaulter := &RayClusterDefaulter{RESTMapper: &mockOpenShiftRESTMapperUnit{}}
+	require.NoError(t, defaulter.Default(context.Background(), cluster))
+
+	require.NotNil(t, cluster.Spec.TLSOptions)
+	assert.False(t, *cluster.Spec.TLSOptions.Enabled)
+	assert.Equal(t, wantNetworkPolicy, cluster.Spec.NetworkPolicy)
+}
+
 func (m *mockOpenShiftRESTMapperUnit) RESTMapping(_ schema.GroupKind, _ ...string) (*meta.RESTMapping, error) {
 	return &meta.RESTMapping{}, nil
 }

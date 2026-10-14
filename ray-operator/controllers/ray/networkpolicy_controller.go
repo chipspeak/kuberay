@@ -124,7 +124,13 @@ func (r *NetworkPolicyController) Reconcile(ctx context.Context, req ctrl.Reques
 				logger.Info("NetworkPolicy migration pending for legacy OpenShift RayCluster; preserving existing policies", "cluster", instance.Name, "namespace", instance.Namespace)
 				return ctrl.Result{RequeueAfter: legacyNetworkPolicyMigrationRequeueInterval}, nil
 			}
-			logger.Info("NetworkPolicy migration grace period expired for legacy OpenShift RayCluster; cleaning up stale policies", "cluster", instance.Name, "namespace", instance.Namespace)
+			// Keep the legacy policies indefinitely if the migration has not completed.
+			// Deleting them after the retry window would leave the cluster without
+			// network isolation when the legacy-security controller is delayed or
+			// unavailable.
+			logger.Info("NetworkPolicy migration grace period expired for legacy OpenShift RayCluster; preserving existing policies", "cluster", instance.Name, "namespace", instance.Namespace)
+			r.resetLegacyMigration(req.NamespacedName)
+			return ctrl.Result{}, nil
 		}
 		r.resetLegacyMigration(req.NamespacedName) // OPENSHIFT SPECIFIC
 		logger.V(1).Info("NetworkPolicy not configured for RayCluster", "cluster", instance.Name, "namespace", instance.Namespace)

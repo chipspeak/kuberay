@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	clientFake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -604,4 +605,60 @@ func TestDeleteStaleNetworkPolicies(t *testing.T) {
 	}
 	// The stale owned policy is gone; the desired one and the unowned one survive.
 	assert.ElementsMatch(t, []string{desired.Name, foreign.Name}, names)
+}
+
+// TestNetworkPolicyControllerPreservesLegacyPoliciesAfterMigrationWindow verifies that
+// a delayed legacy-security migration never removes the policies that are still
+// providing isolation for an upgraded OpenShift RayCluster.
+func TestNetworkPolicyControllerPreservesLegacyPoliciesAfterMigrationWindow(t *testing.T) {
+	setupNetworkPolicyTest(t)
+
+	instance := testRayClusterBasic.DeepCopy()
+	instance.Name = "legacy-cluster"
+	instance.UID = "legacy-cluster-uid"
+	instance.Spec.NetworkPolicy = nil
+	instance.Annotations = map[string]string{
+		utils.EnableSecureTrustedNetworkAnnotationKey: "true",
+	}
+
+	legacyPolicy := func(name, group string) *networkingv1.NetworkPolicy {
+		policy := &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: instance.Namespace,
+				Labels:    networkPolicyLabels(instance, group),
+			},
+		}
+		require.NoError(t, controllerutil.SetControllerReference(instance, policy, testScheme))
+		return policy
+	}
+
+	headPolicy := legacyPolicy(headNetworkPolicyName(instance.Name), utils.RayNodeHeadGroupLabelValue)
+	workerPolicy := legacyPolicy(workerGroupNetworkPolicyName(instance.Name, "small-group"), "small-group")
+	controller := &NetworkPolicyController{
+		Client: clientFake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithObjects(instance, headPolicy, workerPolicy).
+			Build(),
+		Scheme:      testScheme,
+		Recorder:    &events.FakeRecorder{},
+		isOpenShift: true,
+	}
+
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(instance)}
+	for attempt := 0; attempt <= legacyNetworkPolicyMigrationMaxRetries; attempt++ {
+		result, err := controller.Reconcile(t.Context(), request)
+		require.NoError(t, err)
+		if attempt < legacyNetworkPolicyMigrationMaxRetries {
+			assert.Equal(t, legacyNetworkPolicyMigrationRequeueInterval, result.RequeueAfter)
+		} else {
+			assert.Zero(t, result.RequeueAfter)
+		}
+	}
+
+	for _, expected := range []*networkingv1.NetworkPolicy{headPolicy, workerPolicy} {
+		got := &networkingv1.NetworkPolicy{}
+		require.NoError(t, controller.Get(t.Context(), client.ObjectKeyFromObject(expected), got))
+		assert.Equal(t, expected.Name, got.Name)
+	}
 }
