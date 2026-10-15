@@ -1341,3 +1341,48 @@ func TestBatchSchedulerCleanupCalledWhenRayJobSuspendingOrRetrying(t *testing.T)
 		})
 	}
 }
+
+// ODH Specific migration test
+func TestRayJobSubmitterLabelsWithoutAdmission(t *testing.T) {
+	for _, selector := range []bool{false, true} {
+		for _, custom := range []bool{false, true} {
+			t.Run(fmt.Sprintf("clusterSelector=%t/customTemplate=%t", selector, custom), func(t *testing.T) {
+				scheme := newMTLSTestScheme()
+				require.NoError(t, batchv1.AddToScheme(scheme))
+				cluster := newMTLSTestCluster("shared-cluster")
+				c := clientFake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build()
+				r := &RayJobReconciler{Client: c, Scheme: scheme, Recorder: events.NewFakeRecorder(100)}
+				for _, name := range []string{"first-job", "second-job"} {
+					job := &rayv1.RayJob{
+						ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cluster.Namespace, UID: types.UID(name + "-uid")},
+						Spec:       rayv1.RayJobSpec{SubmissionMode: rayv1.K8sJobMode, Entrypoint: "echo test"},
+						Status:     rayv1.RayJobStatus{DashboardURL: "http://shared-cluster-head-svc:8265", JobId: name + "-id"},
+					}
+					if selector {
+						job.Spec.ClusterSelector = map[string]string{utils.RayClusterLabelKey: cluster.Name}
+					} else {
+						job.Spec.RayClusterSpec = cluster.Spec.DeepCopy()
+					}
+					if custom {
+						job.Spec.SubmitterPodTemplate = &corev1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
+								"user-label": "preserved", utils.RayOriginatedFromCRNameLabelKey: "another-job", utils.RayOriginatedFromCRDLabelKey: "another-kind",
+							}},
+							Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: utils.SubmitterContainerName}}, RestartPolicy: corev1.RestartPolicyNever},
+						}
+					}
+					before := job.DeepCopy()
+					require.NoError(t, r.createK8sJobIfNeed(t.Context(), job, cluster))
+					created := &batchv1.Job{}
+					require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(job), created))
+					assert.Equal(t, name, created.Spec.Template.Labels[utils.RayOriginatedFromCRNameLabelKey])
+					assert.Equal(t, "RayJob", created.Spec.Template.Labels[utils.RayOriginatedFromCRDLabelKey])
+					if custom {
+						assert.Equal(t, "preserved", created.Spec.Template.Labels["user-label"])
+					}
+					assert.Equal(t, before.Spec.SubmitterPodTemplate, job.Spec.SubmitterPodTemplate, "labels belong on generated pods, not on the RayJob spec")
+				}
+			})
+		}
+	}
+}

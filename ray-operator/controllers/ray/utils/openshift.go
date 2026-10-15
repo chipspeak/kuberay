@@ -140,6 +140,16 @@ func ensureOpenShiftNetworkPolicy(spec *rayv1.RayClusterSpec) {
 	spec.NetworkPolicy.Head.IngressRules = appendIngress(spec.NetworkPolicy.Head.IngressRules, networkingv1.NetworkPolicyIngressRule{
 		From: []networkingv1.NetworkPolicyPeer{operatorPeer}, Ports: []networkingv1.NetworkPolicyPort{port(8265), port(10001)},
 	})
+	// Preserve the 1.6.2 monitoring contract. An unset namespace must not
+	// expose metrics to other namespaces.
+	if monitoringNamespace := os.Getenv("MONITORING_NAMESPACE"); monitoringNamespace != "" {
+		spec.NetworkPolicy.Head.IngressRules = appendIngress(spec.NetworkPolicy.Head.IngressRules, networkingv1.NetworkPolicyIngressRule{
+			From: []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+				Key: corev1.LabelMetadataName, Operator: metav1.LabelSelectorOpIn, Values: []string{monitoringNamespace},
+			}}}}},
+			Ports: []networkingv1.NetworkPolicyPort{port(8080)},
+		})
+	}
 	gatewayNamespace := os.Getenv("GATEWAY_NAMESPACE")
 	if gatewayNamespace == "" {
 		gatewayNamespace = "openshift-ingress"

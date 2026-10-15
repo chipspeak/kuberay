@@ -29,6 +29,7 @@ func TestWebhookDefaultsOpenShiftNativeSecurityFields(t *testing.T) {
 	t.Setenv("APPLICATION_NAMESPACE", "opendatahub")
 	t.Setenv("POD_NAMESPACE", "ray-system")
 	t.Setenv("GATEWAY_NAMESPACE", "openshift-ingress")
+	t.Setenv("MONITORING_NAMESPACE", "openshift-user-workload-monitoring")
 
 	cluster := &rayv1.RayCluster{}
 	defaulter := &RayClusterDefaulter{RESTMapper: &mockOpenShiftRESTMapperUnit{}}
@@ -40,7 +41,7 @@ func TestWebhookDefaultsOpenShiftNativeSecurityFields(t *testing.T) {
 	require.NotNil(t, cluster.Spec.NetworkPolicy)
 	assert.Equal(t, rayv1.NetworkPolicyDenyAllIngress, *cluster.Spec.NetworkPolicy.Mode)
 	require.NotNil(t, cluster.Spec.NetworkPolicy.Head)
-	assert.Len(t, cluster.Spec.NetworkPolicy.Head.IngressRules, 5)
+	assert.Len(t, cluster.Spec.NetworkPolicy.Head.IngressRules, 6)
 	tcp := corev1.ProtocolTCP
 	dashboardPort := intstr.FromInt32(8265)
 	assert.Contains(t, cluster.Spec.NetworkPolicy.Head.IngressRules, networkingv1.NetworkPolicyIngressRule{

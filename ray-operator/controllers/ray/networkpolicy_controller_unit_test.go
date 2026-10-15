@@ -42,6 +42,7 @@ func setupNetworkPolicyTest(t *testing.T) {
 
 	testScheme = runtime.NewScheme()
 	require.NoError(t, rayv1.AddToScheme(testScheme))
+	require.NoError(t, corev1.AddToScheme(testScheme))
 	require.NoError(t, networkingv1.AddToScheme(testScheme))
 	testNetworkPolicyController = &NetworkPolicyController{
 		Scheme: testScheme,
@@ -593,7 +594,7 @@ func TestDeleteStaleNetworkPolicies(t *testing.T) {
 			Build(),
 	}
 
-	err := controller.deleteStaleNetworkPolicies(t.Context(), instance, map[string]bool{desired.Name: true})
+	_, err := controller.deleteStaleNetworkPolicies(t.Context(), instance, map[string]bool{desired.Name: true})
 	require.NoError(t, err)
 
 	remaining := &networkingv1.NetworkPolicyList{}
@@ -634,7 +635,7 @@ func TestNetworkPolicyControllerPreservesLegacyPoliciesAfterMigrationWindow(t *t
 	}
 
 	headPolicy := legacyPolicy(headNetworkPolicyName(instance.Name), utils.RayNodeHeadGroupLabelValue)
-	workerPolicy := legacyPolicy(workerGroupNetworkPolicyName(instance.Name, "small-group"), "small-group")
+	workerPolicy := legacyPolicy(instance.Name+"-workers", "")
 	controller := &NetworkPolicyController{
 		Client: clientFake.NewClientBuilder().
 			WithScheme(testScheme).
@@ -652,7 +653,7 @@ func TestNetworkPolicyControllerPreservesLegacyPoliciesAfterMigrationWindow(t *t
 		if attempt < legacyNetworkPolicyMigrationMaxRetries {
 			assert.Equal(t, legacyNetworkPolicyMigrationRequeueInterval, result.RequeueAfter)
 		} else {
-			assert.Zero(t, result.RequeueAfter)
+			assert.Equal(t, legacyNetworkPolicyMigrationRetryInterval, result.RequeueAfter)
 		}
 	}
 
