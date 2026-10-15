@@ -636,26 +636,30 @@ func TestNetworkPolicyControllerPreservesLegacyPoliciesAfterMigrationWindow(t *t
 
 	headPolicy := legacyPolicy(headNetworkPolicyName(instance.Name), utils.RayNodeHeadGroupLabelValue)
 	workerPolicy := legacyPolicy(instance.Name+"-workers", "")
+	recorder := events.NewFakeRecorder(20)
 	controller := &NetworkPolicyController{
 		Client: clientFake.NewClientBuilder().
 			WithScheme(testScheme).
 			WithObjects(instance, headPolicy, workerPolicy).
 			Build(),
 		Scheme:      testScheme,
-		Recorder:    &events.FakeRecorder{},
+		Recorder:    recorder,
 		isOpenShift: true,
 	}
 
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(instance)}
-	for attempt := 0; attempt <= legacyNetworkPolicyMigrationMaxRetries; attempt++ {
+	for attempt := range legacyNetworkPolicyMigrationMaxRetries + 4 {
 		result, err := controller.Reconcile(t.Context(), request)
 		require.NoError(t, err)
 		if attempt < legacyNetworkPolicyMigrationMaxRetries {
 			assert.Equal(t, legacyNetworkPolicyMigrationRequeueInterval, result.RequeueAfter)
+			assert.Empty(t, recorder.Events, "do not warn during the initial retry window")
 		} else {
 			assert.Equal(t, legacyNetworkPolicyMigrationRetryInterval, result.RequeueAfter)
 		}
 	}
+	require.Len(t, recorder.Events, 1, "warn once, not on every slow retry")
+	assert.Contains(t, <-recorder.Events, "LegacySecurityMigrationPending")
 
 	for _, expected := range []*networkingv1.NetworkPolicy{headPolicy, workerPolicy} {
 		got := &networkingv1.NetworkPolicy{}

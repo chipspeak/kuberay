@@ -65,7 +65,7 @@ func NewNetworkPolicyController(mgr manager.Manager, openShift ...bool) (*Networ
 }
 
 // DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
-func (r *NetworkPolicyController) shouldRequeueLegacyMigration(key client.ObjectKey) bool {
+func (r *NetworkPolicyController) shouldRequeueLegacyMigration(key client.ObjectKey) (requeue, warn bool) {
 	r.legacyMigrationMutex.Lock()
 	defer r.legacyMigrationMutex.Unlock()
 
@@ -75,10 +75,16 @@ func (r *NetworkPolicyController) shouldRequeueLegacyMigration(key client.Object
 
 	retries := r.legacyMigrationRetries[key]
 	if retries >= legacyNetworkPolicyMigrationMaxRetries {
-		return false
+		// Emit the warning once per migration retry sequence, while continuing
+		// the slower retries for as long as migration remains incomplete.
+		if retries == legacyNetworkPolicyMigrationMaxRetries {
+			r.legacyMigrationRetries[key] = retries + 1
+			return false, true
+		}
+		return false, false
 	}
 	r.legacyMigrationRetries[key] = retries + 1
-	return true
+	return true, false
 }
 
 // DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
@@ -121,7 +127,8 @@ func (r *NetworkPolicyController) Reconcile(ctx context.Context, req ctrl.Reques
 		// DO NOT REMOVE FROM ODH FORK OF KUBERAY: this is only used to preserve legacy OpenShift NetworkPolicies during migration
 		if r.isOpenShift && features.Enabled(features.RayClusterNetworkPolicy) &&
 			utils.IsLegacySecurityEnabled(instance) {
-			if r.shouldRequeueLegacyMigration(req.NamespacedName) {
+			requeue, warn := r.shouldRequeueLegacyMigration(req.NamespacedName)
+			if requeue {
 				logger.Info("NetworkPolicy migration pending for legacy OpenShift RayCluster; preserving existing policies", "cluster", instance.Name, "namespace", instance.Namespace)
 				return ctrl.Result{RequeueAfter: legacyNetworkPolicyMigrationRequeueInterval}, nil
 			}
@@ -129,9 +136,11 @@ func (r *NetworkPolicyController) Reconcile(ctx context.Context, req ctrl.Reques
 			// Deleting them after the retry window would leave the cluster without
 			// network isolation when the legacy-security controller is delayed or
 			// unavailable.
-			logger.Info("NetworkPolicy migration grace period expired for legacy OpenShift RayCluster; preserving existing policies", "cluster", instance.Name, "namespace", instance.Namespace)
-			r.Recorder.Eventf(instance, nil, corev1.EventTypeWarning, "LegacySecurityMigrationPending", string(utils.ReconcileAction),
-				"Legacy security migration has not completed; existing NetworkPolicies are preserved. Check the CRDs and legacy-security controller")
+			if warn {
+				logger.Info("NetworkPolicy migration grace period expired for legacy OpenShift RayCluster; preserving existing policies", "cluster", instance.Name, "namespace", instance.Namespace)
+				r.Recorder.Eventf(instance, nil, corev1.EventTypeWarning, "LegacySecurityMigrationPending", string(utils.ReconcileAction),
+					"Legacy security migration has not completed; existing NetworkPolicies are preserved. Check the CRDs and legacy-security controller")
+			}
 			return ctrl.Result{RequeueAfter: legacyNetworkPolicyMigrationRetryInterval}, nil
 		}
 		r.resetLegacyMigration(req.NamespacedName) // OPENSHIFT SPECIFIC

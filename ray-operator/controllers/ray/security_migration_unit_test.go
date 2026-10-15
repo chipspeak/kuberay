@@ -143,8 +143,9 @@ func TestLegacyNetworkPolicyDelayedMigrationAndRestart(t *testing.T) {
 			scheme, cluster, policies := legacyNetworkPolicyFixture(t)
 			cluster.Annotations[utils.EnableSecureTrustedNetworkAnnotationKey] = annotation
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, policies[0], policies[1]).Build()
+			recorder := events.NewFakeRecorder(100)
 			newController := func() *NetworkPolicyController {
-				return &NetworkPolicyController{Client: c, Scheme: scheme, Recorder: events.NewFakeRecorder(100), isOpenShift: true}
+				return &NetworkPolicyController{Client: c, Scheme: scheme, Recorder: recorder, isOpenShift: true}
 			}
 			network := newController()
 			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cluster)}
@@ -161,6 +162,10 @@ func TestLegacyNetworkPolicyDelayedMigrationAndRestart(t *testing.T) {
 				if attempt == legacyNetworkPolicyMigrationMaxRetries+1 {
 					network = newController() // Restart loses the in-memory retry count.
 				}
+			}
+			require.Len(t, recorder.Events, 2, "warn once before restart and once after restart")
+			for range 2 {
+				assert.Contains(t, <-recorder.Events, "LegacySecurityMigrationPending")
 			}
 			migration := &LegacySecurityController{Client: c, isOpenShift: true}
 			_, err := migration.Reconcile(t.Context(), request)
